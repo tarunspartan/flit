@@ -20,11 +20,7 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
     <div className="room">
       <JoinStatus state={state} />
 
-      <section className="pair">
-        {state.shareUrl ? <QrCode value={state.shareUrl} /> : <div className="qr qr--placeholder" />}
-        <Code display={state.display} url={state.shareUrl} />
-        <Devices state={state} />
-      </section>
+      <Pair state={state} />
 
       <button
         type="button"
@@ -95,6 +91,52 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
         </section>
       )}
     </div>
+  )
+}
+
+/**
+ * The code, and how much room it deserves.
+ *
+ * Up until the first device connects this is the entire point of the screen, so
+ * it gets the space. After that the job has changed to sending files, and a
+ * full-size QR just pushes the drop target down — most of a phone screen spent
+ * on something already done. It folds into one row instead of disappearing: a
+ * room holds several devices, and the code is the only way to let the next one
+ * in — hiding it outright would mean disconnecting everything to add a laptop.
+ *
+ * Pending approvals are deliberately outside the fold — those must stay
+ * impossible to miss.
+ */
+function Pair({state}: {state: SessionSnapshot}) {
+  const connected = state.peers.length > 0
+  const [expanded, setExpanded] = useState(false)
+
+  // Re-fold once a device actually arrives: the reason it was opened is spent.
+  useEffect(() => setExpanded(false), [state.peers.length])
+
+  if (connected && !expanded) {
+    return (
+      <section className="pair pair--folded">
+        <button type="button" className="pair__reveal" onClick={() => setExpanded(true)}>
+          <Icon name="device" size={15} />
+          Add another device
+        </button>
+        <Devices state={state} />
+      </section>
+    )
+  }
+
+  return (
+    <section className="pair">
+      {state.shareUrl ? <QrCode value={state.shareUrl} /> : <div className="qr qr--placeholder" />}
+      <Code display={state.display} url={state.shareUrl} />
+      {connected && (
+        <button type="button" className="pair__reveal" onClick={() => setExpanded(false)}>
+          Done
+        </button>
+      )}
+      <Devices state={state} />
+    </section>
   )
 }
 

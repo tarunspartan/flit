@@ -8,7 +8,8 @@ import type {AppError} from '../core/errors.ts'
 export type PeerId = string
 
 /** How the bytes are actually travelling (§52.2). */
-export type PathKind = 'local' | 'direct' | 'relay' | 'unknown'
+export const PATH_KINDS = ['local', 'direct', 'relay', 'unknown'] as const
+export type PathKind = (typeof PATH_KINDS)[number]
 
 export interface NetworkPath {
   kind: PathKind

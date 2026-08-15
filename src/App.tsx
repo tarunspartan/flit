@@ -1,5 +1,6 @@
 import {useEffect, useRef, useState} from 'react'
 import {codeFromUrl} from './lib/session/RoomManager.ts'
+import {cameFromShare, takeSharedFiles} from './lib/utils/shareTarget.ts'
 import {Icon, Spinner} from './ui/components/common.tsx'
 import {DevicePanel} from './ui/components/DevicePanel.tsx'
 import {RoomScreen} from './ui/components/RoomScreen.tsx'
@@ -161,6 +162,10 @@ function Notices({notices}: {notices: ReturnType<typeof useSession>['notices']})
  * No "create room" button: a room exists by the time the page has painted. A
  * scanned link joins that room instead, and the code is stripped from the URL
  * so it isn't left in history or a screenshot.
+ *
+ * A launch from the OS share sheet lands here too, and the files it carries are
+ * added once the room is actually open — sharing into a room that is still
+ * starting drops them on the floor.
  */
 function useAutoRoom() {
   const started = useRef(false)
@@ -170,12 +175,23 @@ function useAutoRoom() {
     started.current = true
 
     const code = codeFromUrl()
-    if (code) {
-      history.replaceState(null, '', location.pathname + location.search)
-      void session.joinRoom(code)
-    } else {
-      void session.openRoom()
-    }
+    const shared = cameFromShare()
+
+    void (async () => {
+      let open: boolean
+      if (code) {
+        history.replaceState(null, '', location.pathname + location.search)
+        open = await session.joinRoom(code)
+      } else {
+        open = await session.openRoom()
+      }
+
+      if (!shared) return
+      const files = await takeSharedFiles()
+      // Same path as a drop or a paste from here on: offered to the room, so
+      // whatever connects next is offered them without a second action.
+      if (open && files.length > 0) session.shareFiles(files)
+    })()
   }, [])
 }
 

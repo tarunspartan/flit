@@ -41,12 +41,7 @@ export async function classifyPath(pc: RTCPeerConnection): Promise<NetworkPath> 
   const kind = classify(local, remote)
   const rtt = typeof pair.currentRoundTripTime === 'number' ? pair.currentRoundTripTime * 1000 : null
 
-  return {
-    kind,
-    protocol: PROTOCOL,
-    network: kind === 'local' ? localLabel() : NETWORK_LABEL[kind],
-    roundTripMs: rtt
-  }
+  return {kind, protocol: PROTOCOL, network: NETWORK_LABEL[kind], roundTripMs: rtt}
 }
 
 interface PairStat {
@@ -73,32 +68,71 @@ function selectedPair(stats: RTCStatsReport): PairStat | null {
   return (chosen as unknown as PairStat) ?? null
 }
 
+/**
+ * A candidate that names a real endpoint rather than a NAT mapping.
+ *
+ * `prflx` (peer-reflexive) belongs here with `host`. A peer-reflexive candidate
+ * *is* a host candidate — one learned from an arriving STUN check instead of
+ * from signaling, which happens routinely when the check outruns the candidate,
+ * and every time the far side's mDNS `.local` name fails to resolve. Android
+ * resolves those far less reliably than macOS does, so the same LAN link is
+ * seen as (host, host) on one device and (host, prflx) on the other. Treating
+ * `prflx` as NAT traversal is what made two ends of one connection disagree.
+ */
+function isDirectlyAddressed(candidate: CandidateStat): boolean {
+  return candidate.candidateType === 'host' || candidate.candidateType === 'prflx'
+}
+
 function classify(local?: CandidateStat, remote?: CandidateStat): PathKind {
   if (!local || !remote) return 'unknown'
 
   // A relay on either end means the bytes pass through a TURN server.
   if (local.candidateType === 'relay' || remote.candidateType === 'relay') return 'relay'
 
-  const localHost = local.candidateType === 'host'
-  const remoteHost = remote.candidateType === 'host'
+  // A server-reflexive candidate is a NAT mapping discovered via STUN, so it is
+  // real evidence of traversal and stays 'direct' — and both ends see it as
+  // srflx, so they agree without help.
+  if (!isDirectlyAddressed(local) || !isDirectlyAddressed(remote)) return 'direct'
 
-  // Host-to-host means ICE needed no NAT traversal at all, which in practice
-  // means the two devices can reach each other directly on the same network.
+  // Both ends are directly addressed, which in practice means the two devices
+  // reach each other without NAT. Confirm with the addresses.
   //
   // Checking for a *private* address is not enough: home networks hand out
   // globally-routable IPv6, so two devices on the same Wi-Fi commonly pair
   // public-looking addresses that never leave the router. Same-link evidence
   // (matching subnet) counts as local too.
-  if (localHost && remoteHost) {
-    const a = addressOf(local)
-    const b = addressOf(remote)
-    if (isPrivate(a) && isPrivate(b)) return 'local'
-    if (sameSubnet(a, b)) return 'local'
-    // mDNS hides the address entirely; host-to-host is still the local case.
-    if (a === '' || b === '') return 'local'
-  }
+  const a = addressOf(local)
+  const b = addressOf(remote)
+  if (isPrivate(a) && isPrivate(b)) return 'local'
+  if (sameSubnet(a, b)) return 'local'
+
+  // mDNS hides an address entirely. Trust the end still readable rather than
+  // assuming: a redacted address paired with a public one proves nothing.
+  if (a === '' && (b === '' || isPrivate(b))) return 'local'
+  if (b === '' && isPrivate(a)) return 'local'
 
   return 'direct'
+}
+
+/**
+ * Reconciles the two ends' verdicts so one connection gets one label.
+ *
+ * 'local' and 'relay' are positive findings — a device says them only with
+ * address or TURN evidence in hand. 'direct' is the fallback for when locality
+ * could not be *proven*, never proof of the opposite. So a side that found
+ * evidence outranks a side that did not, and the classifier's blind spots stop
+ * being visible as two devices contradicting each other.
+ */
+export function agreeKind(mine: PathKind, theirs: PathKind): PathKind {
+  if (mine === 'relay' || theirs === 'relay') return 'relay'
+  if (mine === 'local' || theirs === 'local') return 'local'
+  if (mine === 'direct' || theirs === 'direct') return 'direct'
+  return 'unknown'
+}
+
+/** Applies an agreed kind to a locally-measured path, keeping our own RTT. */
+export function withKind(path: NetworkPath, kind: PathKind): NetworkPath {
+  return kind === path.kind ? path : {...path, kind, network: NETWORK_LABEL[kind]}
 }
 
 /**
@@ -160,13 +194,11 @@ export function isPrivate(address: string): boolean {
   return false
 }
 
-/**
- * The Network Information API can confirm Wi-Fi on some platforms. Where it
- * cannot, we say "Local network" rather than claiming a link type we don't know.
+/*
+ * There was a `localLabel()` here that read navigator.connection to say "Local
+ * Wi-Fi" or "Local Ethernet". It is gone on purpose: only Chromium populates
+ * that API, and one end of a link can be on Wi-Fi while the other is on
+ * Ethernet, so it produced two different labels for one connection — the very
+ * thing agreeKind exists to prevent. "Local network" is the only phrasing both
+ * devices can truthfully show.
  */
-function localLabel(): string {
-  const connection = (navigator as unknown as {connection?: {type?: string}}).connection
-  if (connection?.type === 'wifi') return 'Local Wi-Fi'
-  if (connection?.type === 'ethernet') return 'Local Ethernet'
-  return 'Local network'
-}

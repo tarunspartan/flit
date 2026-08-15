@@ -11,17 +11,32 @@ import {
   type StorageSupport
 } from '../storage/index.ts'
 import {TrysteroTransport} from '../transport/TrysteroTransport.ts'
-import {UNKNOWN_PATH, type NetworkPath, type PeerId} from '../transport/Transport.ts'
+import {agreeKind, withKind} from '../transport/pathClassifier.ts'
+import {UNKNOWN_PATH, type NetworkPath, type PathKind, type PeerId} from '../transport/Transport.ts'
 import type {PeerLink} from '../transfer/PeerLink.ts'
 import {TransferManager} from '../transfer/TransferManager.ts'
 import type {SharedFileView, TransferView} from '../transfer/states.ts'
-import {guessDeviceKind, loadDeviceName, sanitizeDeviceName, saveDeviceName} from '../utils/device.ts'
+import {
+  guessDeviceKind,
+  loadDeviceId,
+  loadDeviceName,
+  sanitizeDeviceName,
+  saveDeviceName
+} from '../utils/device.ts'
 import {RoomManager, type RoomRole} from './RoomManager.ts'
 
 export type SessionStatus = 'starting' | 'open' | 'ended'
 
 /** How long signaling must stay unreachable before the UI mentions it. */
 const SIGNALING_GRACE_MS = 10_000
+
+/**
+ * How long to wait for the peer's own read of the connection before showing
+ * ours alone. Saying "Connecting…" briefly is better than saying "Internet" and
+ * flipping to "Local network" a moment later — but a peer on an older build
+ * never answers at all, so this cannot wait forever.
+ */
+const PATH_AGREE_MS = 2500
 
 export interface PeerInfo {
   id: string
@@ -70,9 +85,20 @@ interface PeerRecord {
   id: string
   name: string
   kind: string
+  /** Stable per browser profile, once HELLO arrives. Null when the peer has none. */
+  deviceId: string | null
+  /** True when this "peer" is another tab of this very device. */
+  isSelf: boolean
+  /** Decides which of two connections from one device is the stale one. */
+  joinedAt: number
   approved: boolean
   present: boolean
+  /** This device's own read of the link — never shown on its own. */
   path: NetworkPath
+  /** The peer's read of the same link, once it has told us. */
+  peerKind: PathKind | null
+  /** Cleared once the peer answers, or once waiting for it has run out. */
+  agreeTimer: ReturnType<typeof setTimeout> | null
   limiter: MessageRateLimiter
   dropTimer: ReturnType<typeof setTimeout> | null
 }
@@ -99,6 +125,7 @@ export class SessionManager {
   #status: SessionStatus = 'starting'
   #selfName = loadDeviceName()
   #selfKind = guessDeviceKind()
+  #selfDeviceId = loadDeviceId()
   #peers = new Map<PeerId, PeerRecord>()
   #blocked = new Set<PeerId>()
   #everHadPeer = false
@@ -129,7 +156,9 @@ export class SessionManager {
 
   snapshot(): SessionSnapshot {
     const room = this.#rooms.current
-    const peers = [...this.#peers.values()]
+    // Other tabs of this same device are peers on the wire but not devices to
+    // show, send to, or count.
+    const peers = [...this.#peers.values()].filter(peer => !peer.isSelf)
     return {
       status: this.#status,
       signalingReady: this.#signalingOk,
@@ -156,17 +185,23 @@ export class SessionManager {
 
   // ------------------------------------------------------------ session start
 
-  /** Opens a room. Called automatically on load — no click required. */
-  async openRoom(): Promise<void> {
-    await this.#start(() => this.#rooms.create())
+  /**
+   * Opens a room. Called automatically on load — no click required.
+   *
+   * Resolves to whether the room actually opened. Failures are reported through
+   * the snapshot rather than thrown, so a caller that needs to act on the
+   * outcome — the sidebar's join form closing itself — has to be told directly.
+   */
+  async openRoom(): Promise<boolean> {
+    return this.#start(() => this.#rooms.create())
   }
 
-  async joinRoom(input: string): Promise<void> {
-    await this.#start(() => this.#rooms.join(input))
+  async joinRoom(input: string): Promise<boolean> {
+    return this.#start(() => this.#rooms.join(input))
   }
 
-  async #start(makeRoom: () => {code: string}): Promise<void> {
-    if (this.#busy) return
+  async #start(makeRoom: () => {code: string}): Promise<boolean> {
+    if (this.#busy) return false
     this.#busy = true
     this.#error = null
     this.#status = 'starting'
@@ -187,11 +222,13 @@ export class SessionManager {
       this.#status = 'open'
       this.#armExpiry()
       this.#watchSignaling()
+      return true
     } catch (err) {
       this.#error = toAppError(err, 'connection-failed')
       this.#status = 'ended'
       this.#rooms.clear()
       await this.#teardownTransport()
+      return false
     } finally {
       this.#busy = false
       this.#changed()
@@ -208,6 +245,7 @@ export class SessionManager {
         const peer = this.#peers.get(peerId)
         if (!peer) return
         peer.path = path
+        this.#tellPeerOurPath(peer)
         this.#changed()
       }),
       transport.on('error', ({error}) => {
@@ -229,7 +267,7 @@ export class SessionManager {
       if (existing.dropTimer !== null) clearTimeout(existing.dropTimer)
       existing.dropTimer = null
       void this.#sendHello(peerId)
-      if (existing.approved) this.#transfers.peerRestored(peerId)
+      if (existing.approved && !existing.isSelf) this.#transfers.peerRestored(peerId)
       this.#changed()
       return
     }
@@ -248,9 +286,14 @@ export class SessionManager {
       kind: 'desktop',
       // Holding the room code is the credential; approval is opt-in for people
       // who want a prompt before a device can join (see settings).
+      deviceId: null,
+      isSelf: false,
+      joinedAt: Date.now(),
       approved: !this.#requireApproval,
       present: true,
       path: this.#transport?.pathFor(peerId) ?? UNKNOWN_PATH,
+      peerKind: null,
+      agreeTimer: null,
       limiter: new MessageRateLimiter(),
       dropTimer: null
     })
@@ -264,7 +307,12 @@ export class SessionManager {
     if (!peer) return
 
     peer.present = false
+    // A reconnect can land on an entirely different path, so both reads of the
+    // old one are discarded rather than carried over.
     peer.path = UNKNOWN_PATH
+    peer.peerKind = null
+    if (peer.agreeTimer !== null) clearTimeout(peer.agreeTimer)
+    peer.agreeTimer = null
     if (peer.approved) this.#transfers.peerLost(peerId)
 
     // Give the device a window to come back before its transfers are discarded.
@@ -311,8 +359,35 @@ export class SessionManager {
       case 'SESSION_END':
         this.#onSessionEnd(peerId, msg.reason)
         break
+      case 'PATH_NOTE':
+        peer.peerKind = msg.kind
+        if (peer.agreeTimer !== null) clearTimeout(peer.agreeTimer)
+        peer.agreeTimer = null
+        this.#changed()
+        break
       default:
         this.#transfers.handleControl(peerId, msg)
+    }
+  }
+
+  /**
+   * Sends our read of the link and starts the clock on the peer's.
+   *
+   * Both devices do this off their own polling, so the exchange needs no
+   * request/response: each simply publishes what it sees whenever that changes.
+   */
+  #tellPeerOurPath(peer: PeerRecord): void {
+    if (peer.path.kind === 'unknown' || !peer.present) return
+
+    void this.#transport
+      ?.sendControl(peer.id, message({t: 'PATH_NOTE', kind: peer.path.kind}))
+      .catch(() => {})
+
+    if (peer.peerKind === null && peer.agreeTimer === null) {
+      peer.agreeTimer = setTimeout(() => {
+        peer.agreeTimer = null
+        this.#changed() // Stop waiting; toPeerInfo falls back to our own read.
+      }, PATH_AGREE_MS)
     }
   }
 
@@ -327,10 +402,55 @@ export class SessionManager {
   #onHello(peer: PeerRecord, msg: Extract<ControlMessage, {t: 'HELLO'}>): void {
     peer.name = sanitizeDeviceName(msg.deviceName)
     peer.kind = sanitizeDeviceName(msg.deviceKind)
+    peer.deviceId = msg.deviceId ?? null
+    // Every device in the room meshes with every other, so a second tab of this
+    // same device shows up here as a peer. It is not another device and there is
+    // nothing to send it, so it is kept out of the roster entirely rather than
+    // disconnected — two tabs each ending the other is a race with no winner.
+    peer.isSelf = peer.deviceId !== null && peer.deviceId === this.#selfDeviceId
+
+    if (peer.isSelf) {
+      this.#transfers.peerRemoved(peer.id)
+      this.#changed()
+      return
+    }
+
+    this.#dropSupersededTwin(peer)
     // Only now do we know what to call the device, so this is where a peer
     // becomes ready to be offered the room's files.
     if (peer.approved) this.#transfers.peerReady(peer.id, peer.name)
     this.#changed()
+  }
+
+  /**
+   * Retires an earlier connection from a device that has just connected again.
+   *
+   * Scanning the code twice leaves two live links to one phone, and every file
+   * shared is then offered down both — duplicate transfers over the same radio.
+   * The newer link wins because a re-scan almost always means the older tab is
+   * stale, and the older one is told rather than dropped silently: it ends up on
+   * the "Disconnected" screen instead of quietly talking to a peer that has
+   * stopped listening.
+   *
+   * Only ever compares two *other* peers, so unlike the self case there is a
+   * single decider and no race.
+   */
+  #dropSupersededTwin(current: PeerRecord): void {
+    if (current.deviceId === null) return
+
+    for (const other of [...this.#peers.values()]) {
+      if (other.id === current.id) continue
+      if (other.deviceId === null || other.deviceId !== current.deviceId) continue
+      if (other.joinedAt > current.joinedAt) continue
+
+      void this.#transport
+        ?.sendControl(other.id, message({t: 'SESSION_END', reason: 'user'}))
+        .catch(() => {})
+      if (other.dropTimer !== null) clearTimeout(other.dropTimer)
+      if (other.agreeTimer !== null) clearTimeout(other.agreeTimer)
+      this.#transfers.peerRemoved(other.id)
+      this.#peers.delete(other.id)
+    }
   }
 
   #onSessionEnd(peerId: PeerId, reason: 'user' | 'expired' | 'blocked' | 'full'): void {
@@ -464,7 +584,14 @@ export class SessionManager {
     return {
       isConnected: () => {
         const peer = this.#peers.get(peerId)
-        return this.#status === 'open' && peer?.present === true && peer.approved
+        // `isSelf` belongs here too: nothing should ever stream to another tab
+        // of this device, whatever route reached this link.
+        return (
+          this.#status === 'open' &&
+          peer?.present === true &&
+          peer.approved &&
+          !peer.isSelf
+        )
       },
       sendControl: async (msg: ControlMessage) => {
         const transport = this.#transport
@@ -486,6 +613,7 @@ export class SessionManager {
         message({
           t: 'HELLO',
           sessionId: this.#transport.selfId.slice(0, 32),
+          ...(this.#selfDeviceId ? {deviceId: this.#selfDeviceId} : {}),
           deviceName: this.#selfName,
           deviceKind: this.#selfKind,
           maxFileSize: LIMITS.maxFileSize,
@@ -593,6 +721,22 @@ function toPeerInfo(peer: PeerRecord): PeerInfo {
     kind: peer.kind,
     present: peer.present,
     approved: peer.approved,
-    path: peer.path
+    path: agreedPath(peer)
   }
+}
+
+/**
+ * The single label both devices show.
+ *
+ * While the peer's read is still outstanding the answer stays 'unknown', which
+ * the UI renders as "Connecting…" — the point is to never claim "Internet" for
+ * a link that is about to be revealed as local. `agreeTimer` running out drops
+ * that hold so a peer that never answers cannot leave the badge stuck.
+ */
+function agreedPath(peer: PeerRecord): NetworkPath {
+  if (peer.path.kind === 'unknown') return peer.path
+  if (peer.peerKind === null) {
+    return peer.agreeTimer === null ? peer.path : UNKNOWN_PATH
+  }
+  return withKind(peer.path, agreeKind(peer.path.kind, peer.peerKind))
 }

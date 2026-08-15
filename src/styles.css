@@ -519,6 +519,31 @@ button {
   padding: 4px 0 2px;
 }
 
+/* Once a device is connected the code folds to a single row, so the drop
+   target comes up the screen instead of sitting below a QR nobody needs. */
+.pair--folded {
+  padding: 0;
+}
+
+.pair__reveal {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pair__reveal:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
 .qr {
   background: #fff;
   padding: 11px;

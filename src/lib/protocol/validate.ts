@@ -4,6 +4,7 @@
  * coerced — a message we don't fully understand never reaches the state machine.
  */
 import {LIMITS} from '../core/config.ts'
+import {PATH_KINDS} from '../transport/Transport.ts'
 import {
   MIN_COMPATIBLE_VERSION,
   PROTOCOL_VERSION,
@@ -52,7 +53,8 @@ const TYPES: readonly MessageType[] = [
   'TRANSFER_VERIFY',
   'TRANSFER_ERROR',
   'SESSION_APPROVE',
-  'SESSION_END'
+  'SESSION_END',
+  'PATH_NOTE'
 ]
 
 export function parseControl(raw: unknown): ParseResult {
@@ -83,6 +85,7 @@ function validateBody(m: Rec): boolean {
     case 'HELLO':
       return (
         id(m.sessionId) &&
+        (m.deviceId === undefined || id(m.deviceId)) &&
         str(m.deviceName, 128) &&
         str(m.deviceKind, 32) &&
         int(m.maxFileSize, 0, Number.MAX_SAFE_INTEGER) &&
@@ -155,6 +158,9 @@ function validateBody(m: Rec): boolean {
 
     case 'SESSION_END':
       return oneOf(m.reason, ['user', 'expired', 'blocked', 'full'] as const)
+
+    case 'PATH_NOTE':
+      return oneOf(m.kind, PATH_KINDS)
 
     default:
       return false
