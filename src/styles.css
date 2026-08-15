@@ -1,0 +1,1531 @@
+/* ------------------------------------------------------------------ tokens */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f1f3f6;
+  --border: #e2e5ea;
+  --border-strong: #cdd3db;
+  --text: #10131a;
+  --text-soft: #5b6472;
+  --text-faint: #8a93a1;
+  --accent: #2f6bff;
+  --accent-soft: #e8efff;
+  --accent-text: #ffffff;
+  --ok: #12915b;
+  --ok-soft: #e3f5ec;
+  --warn: #b7791f;
+  --warn-soft: #fdf3e0;
+  --danger: #d1483c;
+  --danger-soft: #fdecea;
+  --relay: #c98a12;
+  --shadow: 0 1px 2px rgb(16 19 26 / 6%), 0 8px 24px -12px rgb(16 19 26 / 18%);
+  --radius: 14px;
+  --radius-sm: 9px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0b0d10;
+    --surface: #14171c;
+    --surface-2: #1b1f26;
+    --border: #262b33;
+    --border-strong: #363d47;
+    --text: #eef1f5;
+    --text-soft: #a5aeba;
+    --text-faint: #78818e;
+    --accent: #5b8cff;
+    --accent-soft: #172341;
+    --accent-text: #06080c;
+    --ok: #3ecf8e;
+    --ok-soft: #10281f;
+    --warn: #e0a63f;
+    --warn-soft: #2a2110;
+    --danger: #ff6b5e;
+    --danger-soft: #2c1512;
+    --relay: #e0a63f;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -16px rgb(0 0 0 / 70%);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0b0d10;
+  --surface: #14171c;
+  --surface-2: #1b1f26;
+  --border: #262b33;
+  --border-strong: #363d47;
+  --text: #eef1f5;
+  --text-soft: #a5aeba;
+  --text-faint: #78818e;
+  --accent: #5b8cff;
+  --accent-soft: #172341;
+  --accent-text: #06080c;
+  --ok: #3ecf8e;
+  --ok-soft: #10281f;
+  --warn: #e0a63f;
+  --warn-soft: #2a2110;
+  --danger: #ff6b5e;
+  --danger-soft: #2c1512;
+  --relay: #e0a63f;
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -16px rgb(0 0 0 / 70%);
+  color-scheme: dark;
+}
+
+/* ------------------------------------------------------------------- reset */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  /* The page itself never scrolls — the content column does. Keeps the
+     floating controls steady and stops iOS rubber-banding the whole app. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  /* Kill the 300ms double-tap-zoom delay and the grey flash on tap. */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Keyboard users get a visible ring; pointer users don't get a stray outline. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Copy that depends on whether there is a pointer to drag with. */
+.touch-only {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .pointer-only {
+    display: none;
+  }
+
+  .touch-only {
+    display: inline;
+  }
+}
+
+.icon {
+  flex: none;
+}
+
+.dot {
+  opacity: 0.5;
+}
+
+/* ------------------------------------------------------------------ layout */
+.app {
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+}
+
+.fabs {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-soft);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.fab:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+@media (pointer: coarse) {
+  .fab {
+    padding: 11px;
+  }
+
+  .fab--devices {
+    padding: 11px 14px;
+  }
+}
+
+/* The live-device pill: green because it is a healthy, active state. */
+.fab--devices {
+  padding: 8px 13px;
+  color: var(--ok);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.fab--devices:hover {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+
+.fab__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+/* ------------------------------------------------------------- device panel */
+.popover__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+}
+
+.popover {
+  position: fixed;
+  top: calc(max(14px, env(safe-area-inset-top)) + 52px);
+  right: max(14px, env(safe-area-inset-right));
+  z-index: 36;
+  width: min(300px, calc(100vw - 28px));
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  animation: pop-in 0.16s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+}
+
+.popover__title {
+  font-size: 12px;
+  font-weight: 620;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  margin-bottom: 9px;
+}
+
+.popover__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: min(320px, 50dvh);
+  overflow-y: auto;
+  /* Room for focus rings, cancelled out so the layout is unchanged. */
+  padding-inline: 3px;
+  margin-inline: -3px;
+}
+
+.peer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px 6px 0;
+}
+
+.peer--away {
+  opacity: 0.55;
+}
+
+.peer__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text-soft);
+  flex: none;
+}
+
+.peer__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.peer__name {
+  font-size: 14px;
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.peer__away {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.peer .badge {
+  align-self: flex-start;
+}
+
+.main {
+  flex: 1;
+  /* Required for a flex child to actually scroll instead of growing. */
+  min-height: 0;
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto;
+  /* `.app` already applies the top safe-area inset, so this is only the strip
+     the floating controls occupy. */
+  padding: 62px 18px 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/*
+ * Thin, unobtrusive scrollbars on the panes that scroll. The transparent
+ * border plus background-clip keeps the thumb visually ~4px while leaving an
+ * 8px grab area.
+ */
+.main,
+.panel,
+.popover__list {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.main::-webkit-scrollbar,
+.panel::-webkit-scrollbar,
+.popover__list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.main::-webkit-scrollbar-track,
+.panel::-webkit-scrollbar-track,
+.popover__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.main::-webkit-scrollbar-thumb,
+.panel::-webkit-scrollbar-thumb,
+.popover__list::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.main::-webkit-scrollbar-thumb:hover,
+.panel::-webkit-scrollbar-thumb:hover,
+.popover__list::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: padding-box;
+}
+
+.starting,
+.ended {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 64px 0;
+  text-align: center;
+  color: var(--text-soft);
+}
+
+.ended h2 {
+  font-size: 20px;
+  color: var(--text);
+}
+
+.ended p {
+  margin: 0;
+  max-width: 38ch;
+}
+
+/* ----------------------------------------------------------------- buttons */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.06s;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.button--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--accent);
+}
+
+.button--ghost {
+  background: transparent;
+}
+
+.button--danger {
+  color: var(--danger);
+}
+
+.button--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.button--small {
+  padding: 6px 11px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+
+.button--icon {
+  padding: 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-faint);
+}
+
+.button--icon:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/*
+ * Touch targets. Apple asks for 44px, Material for 48dp; the visual size of
+ * small controls stays as designed and the tappable area is grown around it.
+ */
+@media (pointer: coarse) {
+  .button {
+    min-height: 44px;
+  }
+
+  .button--small {
+    min-height: 40px;
+    padding: 9px 14px;
+  }
+
+  .button--icon {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .device__act,
+  .code__link,
+  .details-toggle,
+  .notice__close {
+    min-height: 40px;
+    padding-inline: 8px;
+  }
+
+  .segmented__option {
+    min-height: 42px;
+  }
+}
+
+/* -------------------------------------------------------------- pairing */
+.room {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pair {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0 2px;
+}
+
+.qr {
+  background: #fff;
+  padding: 11px;
+  border-radius: var(--radius);
+  line-height: 0;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.qr svg {
+  display: block;
+  width: clamp(168px, 52vw, 208px);
+  height: clamp(168px, 52vw, 208px);
+}
+
+.qr--placeholder {
+  width: clamp(190px, 56vw, 230px);
+  aspect-ratio: 1;
+  background: var(--surface-2);
+}
+
+.code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+}
+
+.code__value {
+  font-family: var(--mono);
+  font-size: clamp(20px, 5.5vw, 25px);
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  /* Sits on the page background now that the card is gone, so it needs its own
+     surface and a firm edge to still read as a chip in both themes. */
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+}
+
+.code__value:hover {
+  border-color: var(--border-strong);
+}
+
+.code__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.code__link:hover {
+  color: var(--accent);
+}
+
+/* --------------------------------------------------------------- devices */
+.devices {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  padding-top: 4px;
+}
+
+.device {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px 5px 11px;
+  border-radius: 999px;
+  background: var(--ok-soft);
+  color: var(--ok);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.device--away {
+  background: var(--surface-2);
+  color: var(--text-faint);
+}
+
+.device--pending {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.device__act {
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 2px 4px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.device__act:hover {
+  opacity: 1;
+}
+
+/* -------------------------------------------------------------- drop zone */
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 30px 20px;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.drop:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.drop--compact {
+  flex-direction: row;
+  padding: 14px 18px;
+  gap: 10px;
+}
+
+.drop__title {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: inherit;
+}
+
+.drop__hint {
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+.dropveil {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  border: 3px dashed var(--accent);
+  color: var(--accent);
+  font-size: 17px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* ----------------------------------------------------------------- lists */
+.list__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 620;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  margin-bottom: 9px;
+}
+
+.list__count {
+  font-size: 11.5px;
+  color: var(--text-soft);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 1px 7px;
+  letter-spacing: 0;
+}
+
+.list__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* --------------------------------------------------------- shared files */
+.shared,
+.incoming {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.shared__head,
+.incoming__head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.shared__icon,
+.incoming__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text-soft);
+  flex: none;
+}
+
+.incoming__icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.shared__ident,
+.incoming__ident {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.shared__name,
+.incoming__name {
+  font-weight: 570;
+  font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shared__meta,
+.incoming__meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.shared__waiting {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  padding-left: 41px;
+}
+
+.peerlines {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 41px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.peerline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.peerline__name {
+  min-width: 84px;
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+  font-weight: 550;
+}
+
+.peerline__progress {
+  flex: 1;
+}
+
+.peerline__spacer {
+  flex: 1;
+}
+
+.peerline__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.peerline__state--completed {
+  color: var(--ok);
+}
+
+.peerline__state--failed,
+.peerline__state--reconnecting {
+  color: var(--danger);
+}
+
+.peerline__state--paused {
+  color: var(--warn);
+}
+
+/* ------------------------------------------------------------- incoming */
+.incoming--waiting_for_accept {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.incoming--completed {
+  border-color: color-mix(in srgb, var(--ok) 30%, var(--border));
+}
+
+.incoming--failed {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+
+.incoming__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-soft);
+  flex: none;
+}
+
+.incoming__state--completed {
+  color: var(--ok);
+}
+
+.incoming__state--failed,
+.incoming__state--reconnecting {
+  color: var(--danger);
+}
+
+.incoming__warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+}
+
+.incoming__progress {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.incoming__numbers {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.incoming__percent {
+  font-weight: 650;
+  color: var(--text);
+}
+
+.incoming__speed {
+  color: var(--accent);
+  font-weight: 550;
+}
+
+.incoming__outcome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--ok);
+}
+
+.incoming__error {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.incoming__error span {
+  color: var(--text-soft);
+}
+
+.incoming__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---------------------------------------------------------------- shared */
+.progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.progress__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.25s linear;
+}
+
+.progress--error .progress__fill {
+  background: var(--warn);
+}
+
+.progress--done .progress__fill {
+  background: var(--ok);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: rgb(0 0 0 / 6%);
+  color: inherit;
+}
+
+.badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.badge__sep {
+  opacity: 0.4;
+}
+
+.badge--relay {
+  color: var(--relay);
+}
+
+.details-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.details-toggle .icon {
+  transition: transform 0.15s;
+}
+
+.details-toggle.is-open .icon {
+  transform: rotate(180deg);
+}
+
+.details {
+  margin: 0;
+  padding: 11px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.details__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.details dt {
+  color: var(--text-faint);
+}
+
+.details dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------- banners */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 13px 15px;
+  border-radius: var(--radius);
+  font-size: 13.5px;
+}
+
+.banner div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.banner .button {
+  align-self: center;
+  flex: none;
+}
+
+.banner--warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.banner--info {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.banner--error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.notices {
+  position: fixed;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(440px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 40;
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  font-size: 13.5px;
+}
+
+.notice div {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 1px;
+}
+
+.notice span {
+  color: var(--text-soft);
+}
+
+.notice--error strong {
+  color: var(--danger);
+}
+
+.notice__close {
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px;
+}
+
+/* --------------------------------------------------------------- sidebar */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sheet__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(8 10 14 / 45%);
+  animation: fade-in 0.2s ease both;
+}
+
+/*
+ * Enter is slower than exit — the standard asymmetry: arriving should feel
+ * settled, leaving should feel immediate.
+ */
+.sheet__panel {
+  animation: slide-in-x 0.24s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.sheet.is-closing .sheet__backdrop {
+  animation: fade-in 0.18s ease both reverse;
+}
+
+.sheet.is-closing .sheet__panel {
+  animation: slide-in-x 0.18s ease-in both reverse;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes slide-in-x {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes slide-in-y {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+.sheet__panel {
+  position: relative;
+  width: min(420px, 100vw);
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  /* No inline padding here: it belongs to the children, so the scrolling one
+     has room to draw focus rings without clipping them. */
+  padding: 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* The frame itself never scrolls — `.panel` inside it does. Scrolling the
+     frame meant its bottom padding sat on the scroll container, and WebKit
+     leaves that out of the scroll height, so the last section was unreachable. */
+  overflow: hidden;
+}
+
+/* Only shown when the panel is a bottom sheet. */
+.sheet__grip {
+  display: none;
+}
+
+.sheet__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* Content scrolls beneath a pinned header, so it needs an edge — and the
+     rule spans the full sheet width because the frame has no inline padding. */
+  padding: 0 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel {
+  flex: 1;
+  /* Without this a flex child grows instead of scrolling. */
+  min-height: 0;
+  overflow-y: auto;
+  padding-inline: 20px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/*
+ * Trailing space as a real flex item rather than padding-bottom: a block with
+ * height always counts toward scroll height, whereas padding on a scrolling
+ * flex container does not in WebKit.
+ */
+.panel::after {
+  content: '';
+  flex: none;
+  height: calc(24px + env(safe-area-inset-bottom));
+}
+
+.panel section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.wordmark {
+  gap: 2px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.wordmark h2 {
+  font-size: 21px;
+  font-weight: 660;
+  letter-spacing: -0.03em;
+}
+
+.wordmark p {
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.panel h3 {
+  font-size: 13px;
+  font-weight: 620;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.panel p {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-soft);
+}
+
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13.5px;
+  color: var(--text-soft);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.field__label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.field__input {
+  padding: 11px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  /* 16px minimum: anything smaller makes iOS Safari zoom in on focus. */
+  font-size: 16px;
+  width: 100%;
+  min-height: 44px;
+}
+
+.field__input::placeholder {
+  color: var(--text-faint);
+  opacity: 0.5;
+  letter-spacing: 0.08em;
+}
+
+.field__input--code {
+  font-family: var(--mono);
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.field__input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.field__hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.segmented {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.segmented__option {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.segmented__option.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  cursor: pointer;
+}
+
+.toggle input {
+  margin-top: 3px;
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+  flex: none;
+}
+
+.toggle > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toggle strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.toggle span span {
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+/* --------------------------------------------------------------- spinner */
+.spinner-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.spinner {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+  flex: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2s;
+  }
+
+  .progress__fill {
+    transition: none;
+  }
+
+  /* Keep the fade so the sheet still reads as appearing, but drop the travel. */
+  .sheet__panel,
+  .sheet.is-closing .sheet__panel,
+  .popover {
+    animation-name: fade-in;
+    animation-duration: 0.12s;
+  }
+}
+
+/* ---------------------------------------------------------- small screens */
+@media (max-width: 560px) {
+  .main {
+    /* Clears the floating controls, ~44px tall at 14px from the top. */
+    padding: 66px 13px 34px;
+    gap: 14px;
+  }
+
+  .pair {
+    padding: 0;
+    gap: 12px;
+  }
+
+  /* Full-bleed cards read better than narrow ones on a phone. */
+  .shared,
+  .incoming {
+    padding: 12px;
+  }
+
+  .peerlines,
+  .shared__waiting {
+    padding-left: 0;
+  }
+
+  /* Name on its own line so the bar and percentage always fit. */
+  .peerline {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .peerline__name {
+    min-width: 0;
+    max-width: none;
+    flex: 1 0 100%;
+  }
+
+  .peerline__progress {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  /* Primary action gets a full-width thumb target. */
+  .incoming__actions {
+    gap: 8px;
+  }
+
+  .incoming--waiting_for_accept .incoming__actions .button {
+    flex: 1;
+  }
+
+  .notices {
+    width: calc(100vw - 24px);
+  }
+
+  /* A drawer from the side is awkward one-handed; a bottom sheet is not. */
+  .sheet {
+    align-items: flex-end;
+  }
+
+  .sheet__panel {
+    width: 100vw;
+    max-height: 88dvh;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 18px 18px 0 0;
+    padding-top: 8px;
+  }
+
+  .sheet__panel,
+  .sheet.is-closing .sheet__panel {
+    animation-name: slide-in-y;
+  }
+
+  .sheet__grip {
+    display: block;
+    width: 38px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--border-strong);
+    margin: 0 auto 2px;
+    flex: none;
+  }
+
+}
+
+/* Landscape phones: the QR must not push everything below the fold. */
+@media (max-height: 520px) and (orientation: landscape) {
+  .pair {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .qr svg {
+    width: 150px;
+    height: 150px;
+  }
+
+  .drop {
+    padding: 16px;
+  }
+}

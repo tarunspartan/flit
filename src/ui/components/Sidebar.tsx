@@ -1,0 +1,289 @@
+import {useCallback, useEffect, useState, type FormEvent} from 'react'
+import {formatCode, isValidCode, normalizeCode} from '../../lib/core/ids.ts'
+import type {SessionSnapshot} from '../../lib/session/SessionManager.ts'
+import {session} from '../store.ts'
+import {useTheme, type Theme} from '../theme.ts'
+import {Icon} from './common.tsx'
+
+type Tab = 'about' | 'settings'
+
+/**
+ * Everything that isn't the room itself: how it works, the privacy claim,
+ * settings, and code entry for devices that can't scan. Kept off the main
+ * screen so the first thing a user sees is a QR code and a drop target.
+ */
+/** Must match the exit animation in styles.css. */
+const EXIT_MS = 180
+
+export function Sidebar({state, onClose}: {state: SessionSnapshot; onClose: () => void}) {
+  const [tab, setTab] = useState<Tab>('settings')
+  const [closing, setClosing] = useState(false)
+
+  // The panel unmounts on close, so it has to play its exit animation first
+  // and only then tell the parent to drop it.
+  const dismiss = useCallback(() => {
+    setClosing(true)
+    setTimeout(onClose, EXIT_MS)
+  }, [onClose])
+
+  // Stop the page behind the sheet from scrolling, and close on Escape.
+  useEffect(() => {
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') dismiss()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = previous
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [dismiss])
+
+  return (
+    <div
+      className={`sheet ${closing ? 'is-closing' : ''}`}
+      role="dialog"
+      aria-modal="true"
+      aria-label="About and settings"
+    >
+      <div className="sheet__backdrop" onClick={dismiss} />
+      <div className="sheet__panel">
+        {/* Grab handle: on phones this panel is a bottom sheet. */}
+        <div className="sheet__grip" aria-hidden="true" />
+        <header className="sheet__header">
+          <div className="segmented">
+            <button
+              type="button"
+              className={`segmented__option ${tab === 'settings' ? 'is-active' : ''}`}
+              onClick={() => setTab('settings')}
+            >
+              Settings
+            </button>
+            <button
+              type="button"
+              className={`segmented__option ${tab === 'about' ? 'is-active' : ''}`}
+              onClick={() => setTab('about')}
+            >
+              About
+            </button>
+          </div>
+          <button type="button" className="button button--icon" onClick={dismiss} aria-label="Close">
+            <Icon name="x" />
+          </button>
+        </header>
+
+        {tab === 'settings' ? <Settings state={state} /> : <About state={state} />}
+      </div>
+    </div>
+  )
+}
+
+function About({state}: {state: SessionSnapshot}) {
+  return (
+    <div className="panel">
+      {/* The only place the product is named — the room screen stays bare. */}
+      <section className="wordmark">
+        <h2>flit</h2>
+        <p>
+          <em>v.</em> to move swiftly and lightly from one place to another.
+        </p>
+      </section>
+
+      <section>
+        <h3>How it works</h3>
+        <ol className="steps">
+          <li>Your code is ready the moment you land here.</li>
+          <li>Scan the code from another device — phone, laptop, anything with a browser.</li>
+          <li>Drop files. Any connected device can download them.</li>
+          <li>Close the tab and everything disappears.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h3>Where your files go</h3>
+        <p>
+          Straight from one device to the other over an encrypted WebRTC connection. There is no
+          upload step, no copy on a server, and no account. Files are chunked, streamed, and
+          verified with SHA-256 on arrival — a file that doesn't match is discarded, not saved.
+        </p>
+        <p>
+          Your code never reaches a server: what gets published is a hash of it, and the code
+          itself is the key that encrypts the connection setup.
+        </p>
+      </section>
+
+      <section>
+        <h3>Codes</h3>
+        <p>
+          Nothing anywhere keeps a list of codes. Enter one somebody shared and you connect to
+          their devices; enter one nobody is using and it simply becomes yours to share. Either
+          way there is nothing to sign up for.
+        </p>
+      </section>
+
+      <section>
+        <h3>Drop first, connect later</h3>
+        <p>
+          Files are offered to <em>every</em> connected device, not to one in particular. Drop them
+          now and anything that connects afterwards is offered them automatically.
+        </p>
+      </section>
+
+      <section>
+        <h3>When it can't connect</h3>
+        <p>
+          There is no relay server to fall back on, which is what keeps this free of infrastructure.
+          On the same Wi-Fi it essentially always works. Across networks it usually works. A few
+          networks — strict corporate firewalls, some captive Wi-Fi, certain mobile carriers — block
+          direct connections outright, and there both devices should join the same network instead.
+        </p>
+      </section>
+
+      <section>
+        <h3>This browser</h3>
+        <p>{describeStorage(state)}</p>
+      </section>
+    </div>
+  )
+}
+
+function Settings({state}: {state: SessionSnapshot}) {
+  const [theme, setTheme] = useTheme()
+  const [name, setName] = useState(state.selfName)
+
+  return (
+    <div className="panel">
+      <label className="field">
+        <span className="field__label">Device name</span>
+        <input
+          className="field__input"
+          value={name}
+          maxLength={32}
+          onChange={event => setName(event.target.value)}
+          onBlur={() => session.setDeviceName(name)}
+        />
+        <span className="field__hint">Shown to devices you connect with. Never sent to a server.</span>
+      </label>
+
+      <div className="field">
+        <span className="field__label">Appearance</span>
+        <div className="segmented">
+          {(['system', 'light', 'dark'] as Theme[]).map(option => (
+            <button
+              key={option}
+              type="button"
+              className={`segmented__option ${theme === option ? 'is-active' : ''}`}
+              onClick={() => setTheme(option)}
+            >
+              {option === 'light' && <Icon name="sun" size={14} />}
+              {option === 'dark' && <Icon name="moon" size={14} />}
+              {option[0]?.toUpperCase()}
+              {option.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <JoinByCode />
+
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={state.requireApproval}
+          onChange={event => session.setRequireApproval(event.target.checked)}
+        />
+        <span>
+          <strong>Ask before a device joins</strong>
+          <span>
+            Off by default — holding the code is enough to join, and every file still needs your
+            approval before it downloads. Turn on to confirm each device as well.
+          </span>
+        </span>
+      </label>
+
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={state.localOnly}
+          onChange={event => session.setLocalOnly(event.target.checked)}
+        />
+        <span>
+          <strong>Local network only</strong>
+          <span>
+            Refuses anything but a direct local connection. Applies next time you connect.
+          </span>
+        </span>
+      </label>
+
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={state.alwaysChooseLocation}
+          onChange={event => session.setAlwaysChooseLocation(event.target.checked)}
+        />
+        <span>
+          <strong>Always choose where to save</strong>
+          <span>
+            Asks for a location on every download. Off by default, where large files still get a
+            picker and small ones go to your downloads.
+          </span>
+        </span>
+      </label>
+
+      <button
+        type="button"
+        className="button button--danger"
+        onClick={() => void session.endSession()}
+      >
+        Disconnect everything
+      </button>
+    </div>
+  )
+}
+
+/** For devices that can't scan — a laptop joining from a phone's code, say. */
+function JoinByCode() {
+  const [value, setValue] = useState('')
+  const normalized = normalizeCode(value)
+  const valid = isValidCode(normalized)
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    if (valid) void session.joinRoom(normalized)
+  }
+
+  return (
+    <form className="field" onSubmit={submit}>
+      <span className="field__label">Join with a code</span>
+      {/* The placeholder is a mask, not a sample code: a realistic-looking one
+          reads as something you are supposed to type in. */}
+      <input
+        className="field__input field__input--code"
+        value={formatCode(normalized).slice(0, 14) || value}
+        onChange={event => setValue(event.target.value)}
+        placeholder="XXXX-XXXX-XXXX"
+        autoComplete="off"
+        autoCapitalize="characters"
+        autoCorrect="off"
+        spellCheck={false}
+        maxLength={14}
+      />
+      <button type="submit" className="button" disabled={!valid}>
+        Join
+      </button>
+      <span className="field__hint">Disconnects the devices you're connected to now.</span>
+    </form>
+  )
+}
+
+function describeStorage(state: SessionSnapshot): string {
+  switch (state.storage.best) {
+    case 'filesystem':
+      return 'Downloads stream straight to a location you pick — the best path for very large files.'
+    case 'opfs':
+      return 'Downloads stream to private browser storage, get verified, then land in your downloads. Large files never have to fit in memory.'
+    default:
+      return 'This browser lacks streaming storage, so incoming files are held in memory and capped at 512 MB.'
+  }
+}

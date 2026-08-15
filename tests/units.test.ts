@@ -1,0 +1,371 @@
+import {describe, expect, it} from 'vitest'
+import {formatCode, isValidCode, normalizeCode, randomCode, deriveRoomTopic} from '../src/lib/core/ids.ts'
+import {ChunkTreeHasher} from '../src/lib/integrity/hash.ts'
+import {decodeChunk, encodeChunk, FRAME_HEADER_BYTES} from '../src/lib/protocol/frame.ts'
+import {MessageRateLimiter, parseControl} from '../src/lib/protocol/validate.ts'
+import {PROTOCOL_VERSION} from '../src/lib/protocol/messages.ts'
+import {canTransition, isTerminal} from '../src/lib/transfer/states.ts'
+import {FlowController} from '../src/lib/transfer/FlowController.ts'
+import {sanitizeFilename, sanitizeRelativePath, uniqueFilename} from '../src/lib/utils/filename.ts'
+import {SpeedMeter} from '../src/lib/utils/speed.ts'
+import {isPrivate, sameSubnet} from '../src/lib/transport/pathClassifier.ts'
+import {formatBytes, formatDuration} from '../src/lib/utils/format.ts'
+
+describe('pairing codes', () => {
+  it('generates 12 symbols of Crockford base32', () => {
+    for (let i = 0; i < 50; i++) {
+      const code = randomCode()
+      expect(code).toHaveLength(12)
+      expect(isValidCode(code)).toBe(true)
+      expect(code).not.toMatch(/[ILOU]/)
+    }
+  })
+
+  it('formats in groups of four', () => {
+    expect(formatCode('K7XM42QW9PZT')).toBe('K7XM-42QW-9PZT')
+  })
+
+  it('accepts what people actually type', () => {
+    expect(normalizeCode('k7xm-42qw-9pzt')).toBe('K7XM42QW9PZT')
+    expect(normalizeCode('k7xm 42qw 9pzt')).toBe('K7XM42QW9PZT')
+    // Crockford folds the ambiguous letters onto digits.
+    expect(normalizeCode('OIL')).toBe('011')
+    expect(normalizeCode('U')).toBe('V')
+  })
+
+  it('rejects wrong lengths and stray symbols', () => {
+    expect(isValidCode('SHORT')).toBe(false)
+    expect(isValidCode('K7XM42QW9PZTX')).toBe(false)
+  })
+
+  it('derives an opaque topic that never contains the code', async () => {
+    const code = 'K7XM42QW9PZT'
+    const topic = await deriveRoomTopic('app', code)
+    expect(topic).toMatch(/^[0-9a-f]{32}$/)
+    expect(topic).not.toContain(code.toLowerCase())
+    expect(await deriveRoomTopic('app', code)).toBe(topic)
+    expect(await deriveRoomTopic('other-app', code)).not.toBe(topic)
+  })
+})
+
+describe('filename sanitization', () => {
+  it('strips path components so nothing escapes the destination', () => {
+    expect(sanitizeFilename('../../etc/passwd')).toBe('passwd')
+    expect(sanitizeFilename('C:\\Windows\\System32\\evil.dll')).toBe('evil.dll')
+    expect(sanitizeFilename('/absolute/path/file.txt')).toBe('file.txt')
+  })
+
+  it('removes control characters and bidi overrides', () => {
+    expect(sanitizeFilename('bad\u0000name.txt')).toBe('bad_name.txt')
+    expect(sanitizeFilename('invoice\u202egpj.exe')).toBe('invoicegpj.exe')
+  })
+
+  it('handles hidden, reserved, empty and non-string names', () => {
+    expect(sanitizeFilename('.hidden')).toBe('hidden')
+    expect(sanitizeFilename('CON')).toBe('file')
+    expect(sanitizeFilename('nul.txt')).toBe('file')
+    expect(sanitizeFilename('')).toBe('file')
+    expect(sanitizeFilename(null)).toBe('file')
+    expect(sanitizeFilename('trailing. ')).toBe('trailing')
+  })
+
+  it('keeps unicode names intact', () => {
+    expect(sanitizeFilename('résumé — 2026.pdf')).toBe('résumé — 2026.pdf')
+    expect(sanitizeFilename('写真.jpg')).toBe('写真.jpg')
+  })
+
+  it('truncates on bytes while preserving the extension', () => {
+    const long = `${'ä'.repeat(400)}.jpg`
+    const result = sanitizeFilename(long)
+    expect(new TextEncoder().encode(result).byteLength).toBeLessThanOrEqual(255)
+    expect(result.endsWith('.jpg')).toBe(true)
+  })
+
+  it('de-duplicates instead of overwriting', () => {
+    const taken = new Set(['a.txt'])
+    expect(uniqueFilename('a.txt', taken)).toBe('a (2).txt')
+    expect(uniqueFilename('b.txt', taken)).toBe('b.txt')
+  })
+
+  it('constrains folder paths to their destination', () => {
+    expect(sanitizeRelativePath('project/src/index.ts')).toEqual(['project', 'src', 'index.ts'])
+    expect(sanitizeRelativePath('../../../etc/passwd')).toEqual(['etc', 'passwd'])
+    expect(sanitizeRelativePath('/a/./b')).toEqual(['a', 'b'])
+    expect(sanitizeRelativePath(42)).toEqual([])
+  })
+})
+
+describe('chunk framing', () => {
+  it('round-trips a frame', () => {
+    const payload = new Uint8Array([1, 2, 3, 4, 5])
+    const frame = decodeChunk(encodeChunk(9, 1234, payload), 1024)
+    expect(frame).not.toBeNull()
+    expect(frame?.seq).toBe(9)
+    expect(frame?.index).toBe(1234)
+    expect([...(frame?.payload ?? [])]).toEqual([1, 2, 3, 4, 5])
+  })
+
+  it('rejects malformed input rather than guessing', () => {
+    expect(decodeChunk('not a frame', 1024)).toBeNull()
+    expect(decodeChunk(new Uint8Array(4), 1024)).toBeNull()
+    expect(decodeChunk(null, 1024)).toBeNull()
+  })
+
+  it('rejects a declared length that does not match the bytes received', () => {
+    const frame = encodeChunk(1, 0, new Uint8Array(64))
+    expect(decodeChunk(frame.subarray(0, FRAME_HEADER_BYTES + 32), 1024)).toBeNull()
+  })
+
+  it('rejects payloads larger than the negotiated chunk size', () => {
+    const frame = encodeChunk(1, 0, new Uint8Array(2048))
+    expect(decodeChunk(frame, 1024)).toBeNull()
+  })
+})
+
+describe('protocol validation', () => {
+  const offer = {
+    v: PROTOCOL_VERSION,
+    t: 'TRANSFER_OFFER',
+    transferId: 'abc123',
+    seq: 1,
+    name: 'a.txt',
+    size: 1024,
+    mimeType: 'text/plain',
+    lastModified: 1,
+    chunkSize: 4096,
+    totalChunks: 1,
+    hashAlgorithm: 'sha256-chunktree-v1'
+  }
+
+  it('accepts a well-formed message', () => {
+    const result = parseControl(offer)
+    expect(result.ok).toBe(true)
+  })
+
+  it('rejects a chunk count that contradicts the size', () => {
+    expect(parseControl({...offer, totalChunks: 99}).ok).toBe(false)
+  })
+
+  it('rejects unknown types, bad ids and missing fields', () => {
+    expect(parseControl({...offer, t: 'EVIL'}).ok).toBe(false)
+    expect(parseControl({...offer, transferId: '../../x'}).ok).toBe(false)
+    expect(parseControl({...offer, size: -1}).ok).toBe(false)
+    expect(parseControl({...offer, size: 1.5}).ok).toBe(false)
+    expect(parseControl({v: PROTOCOL_VERSION}).ok).toBe(false)
+    expect(parseControl(null).ok).toBe(false)
+    expect(parseControl([]).ok).toBe(false)
+  })
+
+  it('flags an incompatible protocol version distinctly', () => {
+    const result = parseControl({...offer, v: PROTOCOL_VERSION + 1})
+    expect(result).toEqual({ok: false, reason: 'incompatible-version'})
+  })
+
+  it('rejects oversized control payloads', () => {
+    const huge = JSON.stringify({...offer, name: 'x'.repeat(200_000)})
+    expect(parseControl(huge)).toEqual({ok: false, reason: 'too-large'})
+  })
+
+  it('rate limits a flooding peer', () => {
+    const limiter = new MessageRateLimiter(10)
+    let allowed = 0
+    for (let i = 0; i < 100; i++) if (limiter.allow(1000)) allowed++
+    expect(allowed).toBeLessThan(100)
+    expect(allowed).toBeGreaterThan(0)
+  })
+})
+
+describe('chunk tree hashing', () => {
+  const bytes = (n: number, fill: number) => new Uint8Array(n).fill(fill)
+
+  it('is deterministic and order-independent', async () => {
+    const a = new ChunkTreeHasher(300, 100, 3)
+    const b = new ChunkTreeHasher(300, 100, 3)
+    await a.add(0, bytes(100, 1))
+    await a.add(1, bytes(100, 2))
+    await a.add(2, bytes(100, 3))
+    // Same chunks, arriving in a different order.
+    await b.add(2, bytes(100, 3))
+    await b.add(0, bytes(100, 1))
+    await b.add(1, bytes(100, 2))
+    expect(await a.root()).toBe(await b.root())
+  })
+
+  it('detects a single flipped byte', async () => {
+    const a = new ChunkTreeHasher(200, 100, 2)
+    const b = new ChunkTreeHasher(200, 100, 2)
+    await a.add(0, bytes(100, 1))
+    await a.add(1, bytes(100, 2))
+    await b.add(0, bytes(100, 1))
+    const tampered = bytes(100, 2)
+    tampered[50] = 99
+    await b.add(1, tampered)
+    expect(await a.root()).not.toBe(await b.root())
+  })
+
+  it('binds the file structure into the hash', async () => {
+    const a = new ChunkTreeHasher(200, 100, 2)
+    const b = new ChunkTreeHasher(999, 100, 2)
+    await a.add(0, bytes(100, 1))
+    await a.add(1, bytes(100, 1))
+    await b.add(0, bytes(100, 1))
+    await b.add(1, bytes(100, 1))
+    expect(await a.root()).not.toBe(await b.root())
+  })
+
+  it('refuses to hash an incomplete file', async () => {
+    const hasher = new ChunkTreeHasher(200, 100, 2)
+    await hasher.add(0, bytes(100, 1))
+    expect(hasher.complete).toBe(false)
+    await expect(hasher.root()).rejects.toThrow()
+  })
+
+  it('tracks contiguous progress across gaps', async () => {
+    const hasher = new ChunkTreeHasher(500, 100, 5)
+    await hasher.add(0, bytes(100, 0))
+    await hasher.add(1, bytes(100, 0))
+    await hasher.add(3, bytes(100, 0))
+    expect(hasher.contiguousCount()).toBe(2)
+    await hasher.add(2, bytes(100, 0))
+    expect(hasher.contiguousCount()).toBe(4)
+  })
+
+  it('drops digests above a resume point', async () => {
+    const hasher = new ChunkTreeHasher(300, 100, 3)
+    await hasher.add(0, bytes(100, 1))
+    await hasher.add(1, bytes(100, 2))
+    hasher.truncateTo(1)
+    expect(hasher.has(0)).toBe(true)
+    expect(hasher.has(1)).toBe(false)
+    expect(hasher.contiguousCount()).toBe(1)
+  })
+
+  it('handles an empty file', async () => {
+    const hasher = new ChunkTreeHasher(0, 100, 0)
+    expect(hasher.complete).toBe(true)
+    expect(await hasher.root()).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+describe('transfer state machine', () => {
+  it('allows the documented edges', () => {
+    expect(canTransition('QUEUED', 'WAITING_FOR_ACCEPT')).toBe(true)
+    expect(canTransition('WAITING_FOR_ACCEPT', 'TRANSFERRING')).toBe(true)
+    expect(canTransition('TRANSFERRING', 'PAUSED')).toBe(true)
+    expect(canTransition('TRANSFERRING', 'RECONNECTING')).toBe(true)
+    expect(canTransition('RECONNECTING', 'TRANSFERRING')).toBe(true)
+    expect(canTransition('VERIFYING', 'COMPLETED')).toBe(true)
+  })
+
+  it('forbids skipping verification and leaving terminal states', () => {
+    expect(canTransition('TRANSFERRING', 'COMPLETED')).toBe(false)
+    expect(canTransition('COMPLETED', 'TRANSFERRING')).toBe(false)
+    expect(canTransition('FAILED', 'TRANSFERRING')).toBe(false)
+    expect(canTransition('QUEUED', 'TRANSFERRING')).toBe(false)
+  })
+
+  it('knows which states are terminal', () => {
+    expect(isTerminal('COMPLETED')).toBe(true)
+    expect(isTerminal('CANCELLED')).toBe(true)
+    expect(isTerminal('TRANSFERRING')).toBe(false)
+  })
+})
+
+describe('flow control', () => {
+  it('bounds concurrent sends and releases waiters in order', async () => {
+    const flow = new FlowController(2)
+    await flow.acquire()
+    await flow.acquire()
+    expect(flow.inFlight).toBe(2)
+
+    let third = false
+    const pending = flow.acquire().then(() => {
+      third = true
+    })
+    await Promise.resolve()
+    expect(third).toBe(false)
+
+    flow.release()
+    await pending
+    expect(third).toBe(true)
+    expect(flow.inFlight).toBe(2)
+  })
+})
+
+describe('speed and ETA', () => {
+  it('stays quiet until it has enough data', () => {
+    const meter = new SpeedMeter()
+    expect(meter.rate(0)).toBeNull()
+    meter.record(1000, 0)
+    expect(meter.rate(100)).toBeNull()
+  })
+
+  it('averages over the window', () => {
+    const meter = new SpeedMeter()
+    for (let i = 0; i <= 10; i++) meter.record(1_000_000, i * 100)
+    const rate = meter.rate(1000)
+    expect(rate).not.toBeNull()
+    // 10 MB across 1 s after discarding the window's first sample.
+    expect(rate!).toBeGreaterThan(9_000_000)
+    expect(rate!).toBeLessThan(11_000_000)
+  })
+
+  it('produces an ETA and resets cleanly', () => {
+    const meter = new SpeedMeter()
+    for (let i = 0; i <= 10; i++) meter.record(1_000_000, i * 100)
+    expect(meter.eta(10_000_000, 1000)).toBeCloseTo(1, 0)
+    expect(meter.eta(0, 1000)).toBe(0)
+    meter.reset()
+    expect(meter.rate(1000)).toBeNull()
+  })
+})
+
+describe('network path classification', () => {
+  it('recognises private and link-local addresses', () => {
+    expect(isPrivate('192.168.1.5')).toBe(true)
+    expect(isPrivate('10.0.0.1')).toBe(true)
+    expect(isPrivate('172.16.4.4')).toBe(true)
+    expect(isPrivate('172.32.4.4')).toBe(false)
+    expect(isPrivate('169.254.1.1')).toBe(true)
+    // Chrome hides host candidates behind mDNS names.
+    expect(isPrivate('a1b2c3d4-0000-0000-0000-000000000000.local')).toBe(true)
+    expect(isPrivate('fe80::1')).toBe(true)
+    expect(isPrivate('fd12::1')).toBe(true)
+  })
+
+  it('recognises two devices on the same link', () => {
+    // The case that made every connection read as "Internet": home networks
+    // hand out globally-routable IPv6, so same-Wi-Fi peers pair public-looking
+    // addresses that never actually leave the router.
+    expect(sameSubnet('2401:4900:1c80:5b2::a1', '2401:4900:1c80:5b2::7f')).toBe(true)
+    expect(sameSubnet('2401:4900:1c80:5b2:1::1', '2401:4900:1c80:5b3:1::1')).toBe(false)
+    expect(isPrivate('2401:4900:1c80:5b2::a1')).toBe(false)
+
+    expect(sameSubnet('192.168.1.10', '192.168.1.44')).toBe(true)
+    expect(sameSubnet('192.168.1.10', '192.168.2.44')).toBe(false)
+    expect(sameSubnet('93.184.216.34', '104.18.32.7')).toBe(false)
+    expect(sameSubnet('', '')).toBe(false)
+  })
+
+  it('treats public addresses as non-local', () => {
+    expect(isPrivate('93.184.216.34')).toBe(false)
+    expect(isPrivate('2606:2800:220:1::1')).toBe(false)
+    expect(isPrivate('')).toBe(false)
+  })
+})
+
+describe('formatting', () => {
+  it('formats byte sizes', () => {
+    expect(formatBytes(0)).toBe('0 B')
+    expect(formatBytes(999)).toBe('999 B')
+    expect(formatBytes(1024)).toBe('1.00 KB')
+    expect(formatBytes(1.8 * 1024 ** 3)).toBe('1.80 GB')
+  })
+
+  it('avoids misleading countdowns', () => {
+    expect(formatDuration(null)).toBe('Calculating…')
+    expect(formatDuration(0.4)).toBe('less than a second')
+    expect(formatDuration(90)).toBe('1 min 30 sec')
+    expect(formatDuration(7200)).toBe('2 hr')
+  })
+})
