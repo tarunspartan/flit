@@ -204,23 +204,22 @@ describe('transfer end to end', () => {
 
     await waitFor(() => wire.receiver !== null)
 
-    // Hold the sender to roughly the window a real link would allow. Without
-    // this the sender reaches the end of the file before the receiver's write
-    // queue has drained far enough to acknowledge anything, so no checkpoint
-    // ever arrives in time to resume from — which is the condition the old
-    // fixed-index cut was silently gambling on.
-    const chunksWritten = () =>
-      Math.floor(wire.receiver!.view().bytesTransferred / CHUNK_SIZE)
+    // Stall the sender partway and wait for a checkpoint to reach it.
+    //
+    // Left to itself the sender empties the whole file before the receiver's
+    // write queue has drained far enough to acknowledge anything, so no useful
+    // checkpoint ever arrives — the condition the old fixed-index cut was
+    // silently gambling on. Stalling cannot deadlock: the receiver keeps
+    // draining what it already holds, which is what produces the checkpoint.
+    // By this index it holds well over the byte interval, so one is guaranteed.
+    const holdFrom = chunksPerCheckpoint + MAX_IN_FLIGHT_CHUNKS
     wire.holdChunk = async index => {
-      // Releasing on disconnect matters as much as the window itself: the
-      // receiver stops writing the moment the link is cut, so a chunk parked
-      // here would wait forever, and the sends still holding the in-flight
-      // window would never fail — leaving the sender unable to resume at all.
-      // A dropped link fails its sends; it does not park them.
-      await waitFor(
-        () => !wire.connected || chunksWritten() + MAX_IN_FLIGHT_CHUNKS >= index,
-        5_000
-      )
+      if (index < holdFrom) return
+      // Releasing on disconnect matters as much as the wait: the receiver stops
+      // writing the moment the link is cut, so a chunk parked here would wait
+      // forever and the sends holding the in-flight window would never fail,
+      // leaving the sender unable to resume. A dropped link fails its sends.
+      await waitFor(() => !wire.connected || wire.checkpointsReceived >= 2, 5_000)
     }
 
     // Cut once the sender is holding the *second* checkpoint, rather than at a
@@ -255,6 +254,8 @@ describe('transfer end to end', () => {
     const resumeFrom = wire.checkpointChunks
     wire.deliveredChunks = []
 
+    // The stall has done its job; the resumed leg runs at full speed.
+    wire.holdChunk = null
     wire.restore()
     await waitFor(() => wire.sender!.state === 'COMPLETED' && wire.receiver!.state === 'COMPLETED')
 
