@@ -266,7 +266,17 @@ export class SessionManager {
   // -------------------------------------------------------------- peer events
 
   #onPeerJoin(peerId: PeerId): void {
-    if (this.#blocked.has(peerId)) return
+    if (this.#blocked.has(peerId)) {
+      // Trystero knows nothing about blocking, so it happily pairs us again the
+      // moment that device rejoins — with the same id, because selfId is minted
+      // once per page load rather than per join. Ignoring it silently left the
+      // other end showing a connection that would never do anything: "1
+      // connected", no name, no transfers. Say no out loud instead.
+      void this.#transport
+        ?.sendControl(peerId, message({t: 'SESSION_END', reason: 'blocked'}))
+        .catch(() => {})
+      return
+    }
 
     const existing = this.#peers.get(peerId)
     if (existing) {
@@ -286,6 +296,11 @@ export class SessionManager {
         .catch(() => {})
       return
     }
+
+    // A device is connected, so any "couldn't connect" left over from a relay
+    // that failed during the join is now simply untrue. One relay refusing is
+    // not a failure when the others carried it.
+    if (this.#error?.code === 'connection-failed') this.#error = null
 
     this.#everHadPeer = true
     this.#peers.set(peerId, {
@@ -469,6 +484,10 @@ export class SessionManager {
       this.#changed()
       return
     }
+    // Being turned away is not the same as someone leaving: without saying so,
+    // the room just looks empty and the code looks broken.
+    if (reason === 'blocked') this.#error = new AppError('peer-blocked')
+
     // One device leaving is not the end of the room for everyone else.
     this.#transfers.peerRemoved(peerId)
     const peer = this.#peers.get(peerId)
@@ -491,17 +510,45 @@ export class SessionManager {
   }
 
   /** Removes a device and stops it rejoining for the rest of the session. */
+  /**
+   * Ends the session with a connected device, and nothing more.
+   *
+   * Deliberately not a block: the room code is the credential, so a device
+   * holding it may come back by entering it again. Blocking here keyed on the
+   * peer id, which Trystero mints per page load — weak enough that a fresh tab
+   * walked past it, and strong enough that re-entering the code did nothing at
+   * all, with no word to either side about why.
+   */
+  disconnectPeer(peerId: string): void {
+    const peer = this.#peers.get(peerId)
+    if (!peer) return
+    if (peer.dropTimer !== null) clearTimeout(peer.dropTimer)
+    if (peer.agreeTimer !== null) clearTimeout(peer.agreeTimer)
+    void this.#transport
+      ?.sendControl(peerId, message({t: 'SESSION_END', reason: 'user'}))
+      .catch(() => {})
+    this.#transfers.peerRemoved(peerId)
+    this.#peers.delete(peerId)
+    this.#notice('Device disconnected', `${peer.name} was disconnected.`, 'info')
+    this.#changed()
+  }
+
+  /**
+   * Refuses a device outright — the answer to an approval prompt, not a way to
+   * end a session. It stays refused for as long as this page is open.
+   */
   blockPeer(peerId: string): void {
     const peer = this.#peers.get(peerId)
     if (!peer) return
     this.#blocked.add(peerId)
     if (peer.dropTimer !== null) clearTimeout(peer.dropTimer)
+    if (peer.agreeTimer !== null) clearTimeout(peer.agreeTimer)
     void this.#transport
       ?.sendControl(peerId, message({t: 'SESSION_END', reason: 'blocked'}))
       .catch(() => {})
     this.#transfers.peerRemoved(peerId)
     this.#peers.delete(peerId)
-    this.#notice('Device removed', `${peer.name} was disconnected.`, 'info')
+    this.#notice('Device blocked', `${peer.name} was not let in.`, 'info')
     this.#changed()
   }
 

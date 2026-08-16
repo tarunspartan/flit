@@ -1023,8 +1023,11 @@ button {
   background: currentColor;
 }
 
-.badge__sep {
-  opacity: 0.4;
+/* Secondary half of the badge: the same size, stepped back so the two labels
+   stay distinguishable without punctuation between them. */
+.badge__network {
+  font-weight: 500;
+  opacity: 0.62;
 }
 
 .badge--relay {

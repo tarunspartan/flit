@@ -172,10 +172,18 @@ export function PathBadge({
   compact?: boolean
 }) {
   return (
-    <span className={`badge badge--${kind}`} title={`${PATH_LABEL[kind]} · ${network}`}>
+    // The gap between the two labels is flex spacing, not a text node, so the
+    // element's own text runs them together. Screen readers get the label.
+    <span
+      className={`badge badge--${kind}`}
+      title={`${PATH_LABEL[kind]} · ${network}`}
+      aria-label={compact ? PATH_LABEL[kind] : `${PATH_LABEL[kind]}, ${network}`}
+    >
+      {/* One dot, one meaning. A separator dot next to the status dot read as
+          two dots that disagree about their size rather than as punctuation;
+          the network reads as secondary from its weight instead. */}
       <span className="badge__dot" aria-hidden="true" />
       {PATH_LABEL[kind]}
-      {!compact && <span className="badge__sep">·</span>}
       {!compact && <span className="badge__network">{network}</span>}
     </span>
   )
