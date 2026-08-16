@@ -1,5 +1,5 @@
 import {getRelaySockets, joinRoom, selfId, type Room} from 'trystero/nostr'
-import {APP_ID} from '../core/config.ts'
+import {APP_ID, RELAY_URLS} from '../core/config.ts'
 import {Emitter} from '../core/events.ts'
 import {AppError} from '../core/errors.ts'
 import {deriveRoomTopic} from '../core/ids.ts'
@@ -60,6 +60,9 @@ export class TrysteroTransport implements Transport {
       {
         appId: APP_ID,
         password: code,
+        // Left to itself Trystero would pick five relays from its defaults, and
+        // for this appId four of those five are dead. See RELAY_URLS.
+        relayConfig: {urls: RELAY_URLS},
         rtcConfig: {
           iceServers,
           // Gather host candidates from every interface so a same-LAN pair is

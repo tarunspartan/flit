@@ -83,3 +83,30 @@ export const STUN_URLS = [
   'stun:stun.cloudflare.com:3478',
   'stun:stun.nextcloud.com:443'
 ]
+
+/**
+ * Signaling relays, pinned rather than left to Trystero's defaults.
+ *
+ * Trystero picks 5 of its 47 public relays by shuffling them with a seed
+ * derived from the appId — so the choice is fixed for the whole app, not per
+ * room. Measured from a browser, 8 of those 47 were unreachable and flit's
+ * particular five contained four of them: damus.io answered 503, binaryrobot
+ * 530, the Aachen mirror 502, and nostrdice closed the connection outright.
+ * Pairing therefore rode on a single relay, and failed whenever that one relay
+ * was busy — which is exactly the "first connection never works, start over
+ * does" behaviour. Rejoining picked the same five, so retrying only helped by
+ * chance.
+ *
+ * These were each verified to complete a WebSocket handshake. Relay operators
+ * come and go, so this list is worth re-checking if pairing gets flaky again.
+ */
+export const RELAY_URLS = [
+  'wss://nostr-01.yakihonne.com',
+  'wss://relay.notoshi.win',
+  'wss://x.kojira.io',
+  'wss://purplerelay.com',
+  'wss://nos.lol',
+  'wss://relay.mostr.pub',
+  'wss://nostr.data.haus',
+  'wss://relay.froth.zone'
+]

@@ -36,9 +36,6 @@ export type SessionStatus = 'starting' | 'open' | 'ended'
 const SIGNALING_GRACE_MS = 10_000
 const SIGNALING_OFFLINE_MS = 30_000
 
-/** Floor between rebuild attempts, so a wake burst counts as one try. */
-const REVIVE_INTERVAL_MS = 15_000
-
 export type SignalingHealth = 'ok' | 'retrying' | 'offline'
 
 /**
@@ -152,8 +149,6 @@ export class SessionManager {
   #requireApproval = false
   #expiryTimer: ReturnType<typeof setTimeout> | null = null
   #unsubscribe: (() => void)[] = []
-  #reviving = false
-  #lastReviveAt = 0
 
   constructor() {
     this.#transfers = new TransferManager(peerId => this.#linkFor(peerId), this.#prefs)
@@ -161,28 +156,6 @@ export class SessionManager {
     this.#transfers.on('notice', notice => this.#notice(notice.title, notice.message, notice.tone))
     // Clear anything a previous session left in OPFS after an abrupt exit.
     void purgeOpfs()
-    this.#watchForWake()
-  }
-
-  /**
-   * Rebuilds signaling after the device wakes up.
-   *
-   * A locked phone gets its tab frozen and its relay sockets closed with it.
-   * Nothing reopens them on its own, so the room looked permanently stuck on
-   * "Reconnecting" — and rejoining by hand did not help either, because the
-   * *other* device was the one holding dead sockets. Waking is the signal to
-   * check, since that is exactly when the sockets are known to be stale.
-   */
-  #watchForWake(): void {
-    if (typeof document === 'undefined') return
-
-    const check = () => {
-      if (document.visibilityState !== 'visible') return
-      if (this.#transport?.signalingReady() === false) void this.#revive()
-    }
-    document.addEventListener('visibilitychange', check)
-    window.addEventListener('online', check)
-    window.addEventListener('pageshow', check)
   }
 
   subscribe(listener: () => void): () => void {
@@ -266,64 +239,6 @@ export class SessionManager {
       return false
     } finally {
       this.#busy = false
-      this.#changed()
-    }
-  }
-
-  /**
-   * Rejoins the same room on a fresh transport, keeping the session intact.
-   *
-   * Deliberately not `#start`: that resets transfers and forgets every peer,
-   * which is right for joining a *different* room and wrong for recovering the
-   * one already open. Files being received survive, and a device that comes
-   * back is recognised — it arrives under a new Trystero id but the same
-   * deviceId, so the stale record is retired by the usual duplicate handling.
-   */
-  async #revive(): Promise<void> {
-    const room = this.#rooms.current
-    if (this.#status !== 'open' || this.#busy || this.#reviving || !room) return
-    // Waking fires visibilitychange, pageshow and sometimes online together.
-    if (Date.now() - this.#lastReviveAt < REVIVE_INTERVAL_MS) return
-
-    this.#reviving = true
-    this.#lastReviveAt = Date.now()
-    try {
-      for (const off of this.#unsubscribe) off()
-      this.#unsubscribe = []
-      const dead = this.#transport
-      this.#transport = null
-      if (dead) await dead.leave().catch(() => {})
-
-      // The old links are gone with the old sockets; peers have to re-announce.
-      for (const peer of this.#peers.values()) {
-        if (!peer.present) continue
-        peer.present = false
-        peer.path = UNKNOWN_PATH
-        peer.peerKind = null
-        if (peer.approved) this.#transfers.peerLost(peer.id)
-
-        // Same window a normal drop gets. Without it a device that never comes
-        // back would sit in the list saying "Reconnecting" forever, which is
-        // how this looked in the first place.
-        if (peer.dropTimer !== null) clearTimeout(peer.dropTimer)
-        peer.dropTimer = setTimeout(() => {
-          this.#transfers.peerRemoved(peer.id)
-          this.#peers.delete(peer.id)
-          this.#changed()
-        }, TIMEOUTS.reconnectWindowMs)
-      }
-      this.#changed()
-
-      const transport = new TrysteroTransport({localOnly: this.#localOnly})
-      this.#transport = transport
-      this.#wireTransport(transport)
-      await transport.join(room.code)
-      this.#watchSignaling()
-    } catch {
-      // Nothing to report: the health watcher is already saying it is down, and
-      // the next wake or its own timer will try again.
-    } finally {
-      this.#reviving = false
       this.#changed()
     }
   }
@@ -746,12 +661,6 @@ export class SessionManager {
         this.#signaling = next
         this.#changed()
       }
-
-      // Only as a last resort, and only once signaling has been gone long
-      // enough that Trystero's own reconnect (3.3s backing off to 60s) has
-      // plainly failed. Rebuilding sooner fights that retry instead of helping,
-      // and a rebuild during pairing destroys the handshake it interrupts.
-      if (next === 'offline') void this.#revive()
     }, 3000)
   }
 
