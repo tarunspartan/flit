@@ -27,6 +27,20 @@ export default defineConfig({
         background_color: '#0b0d10',
         theme_color: '#0b0d10',
         categories: ['utilities', 'productivity'],
+        // Puts flit in the OS share sheet once installed. Only `files` is
+        // declared: accepting title/text/url would offer the app for sharing a
+        // link or a note, and there is nothing here that could send one.
+        //
+        // `action` is relative so it resolves against wherever the manifest
+        // lands, which is what keeps a /<repo>/ deploy working.
+        share_target: {
+          action: 'share',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: {
+            files: [{name: 'files', accept: ['*/*']}]
+          }
+        },
         icons: [
           {src: 'icon-192.png', sizes: '192x192', type: 'image/png'},
           {src: 'icon-512.png', sizes: '512x512', type: 'image/png'},
@@ -41,7 +55,13 @@ export default defineConfig({
         // the app talks to (signaling relays, STUN) is WebSocket/UDP and never
         // passes through the service worker at all.
         globPatterns: ['**/*.{js,css,html,woff2}'],
+        // Adds the share-sheet handler to the generated worker. It registers
+        // its fetch listener before Workbox sets up routing, and only ever
+        // answers the POST the OS sends.
+        importScripts: ['share-target.js'],
         navigateFallback: 'index.html',
+        // The share POST is a navigation; the app shell must not swallow it.
+        navigateFallbackDenylist: [/\/share$/],
         // A part-received file can be gigabytes; never let one near the cache.
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         cleanupOutdatedCaches: true

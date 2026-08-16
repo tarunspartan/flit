@@ -1,4 +1,4 @@
-import {describe, expect, it} from 'vitest'
+import {afterEach, describe, expect, it} from 'vitest'
 import {formatCode, isValidCode, normalizeCode, randomCode, deriveRoomTopic} from '../src/lib/core/ids.ts'
 import {ChunkTreeHasher} from '../src/lib/integrity/hash.ts'
 import {decodeChunk, encodeChunk, FRAME_HEADER_BYTES} from '../src/lib/protocol/frame.ts'
@@ -8,8 +8,9 @@ import {canTransition, isTerminal} from '../src/lib/transfer/states.ts'
 import {FlowController} from '../src/lib/transfer/FlowController.ts'
 import {sanitizeFilename, sanitizeRelativePath, uniqueFilename} from '../src/lib/utils/filename.ts'
 import {SpeedMeter} from '../src/lib/utils/speed.ts'
-import {isPrivate, sameSubnet} from '../src/lib/transport/pathClassifier.ts'
+import {agreeKind, classifyPath, isPrivate, sameSubnet} from '../src/lib/transport/pathClassifier.ts'
 import {formatBytes, formatDuration} from '../src/lib/utils/format.ts'
+import {takeSharedFiles} from '../src/lib/utils/shareTarget.ts'
 
 describe('pairing codes', () => {
   it('generates 12 symbols of Crockford base32', () => {
@@ -351,6 +352,191 @@ describe('network path classification', () => {
     expect(isPrivate('93.184.216.34')).toBe(false)
     expect(isPrivate('2606:2800:220:1::1')).toBe(false)
     expect(isPrivate('')).toBe(false)
+  })
+})
+
+/** A minimal stats report: RTCStatsReport is a Map as far as this code cares. */
+function fakePeer(
+  local: Record<string, unknown>,
+  remote: Record<string, unknown>
+): RTCPeerConnection {
+  const stats = new Map<string, Record<string, unknown>>([
+    ['L', {type: 'local-candidate', id: 'L', ...local}],
+    ['R', {type: 'remote-candidate', id: 'R', ...remote}],
+    [
+      'P',
+      {
+        type: 'candidate-pair',
+        id: 'P',
+        state: 'succeeded',
+        nominated: true,
+        localCandidateId: 'L',
+        remoteCandidateId: 'R',
+        currentRoundTripTime: 0.004
+      }
+    ],
+    ['T', {type: 'transport', id: 'T', selectedCandidatePairId: 'P'}]
+  ])
+  return {getStats: async () => stats} as unknown as RTCPeerConnection
+}
+
+describe('both ends of one link agree on what it is', () => {
+  // A Mac and an Android on one Wi-Fi, reported as "Local network" on the Mac
+  // and "Internet" on the phone. Same connection, two views of it: the phone
+  // never resolved the Mac's mDNS name, so it learned the address from the
+  // arriving STUN check and recorded it peer-reflexive instead of host.
+  const MAC = '192.168.1.20'
+  const PHONE = '192.168.1.31'
+
+  it('reads the same LAN link as local from either end', async () => {
+    const fromMac = await classifyPath(
+      fakePeer({candidateType: 'host', address: MAC}, {candidateType: 'host', address: PHONE})
+    )
+    const fromPhone = await classifyPath(
+      fakePeer({candidateType: 'host', address: PHONE}, {candidateType: 'prflx', address: MAC})
+    )
+
+    expect(fromMac.kind).toBe('local')
+    expect(fromPhone.kind).toBe('local')
+    expect(fromPhone.network).toBe(fromMac.network)
+    expect(fromMac.roundTripMs).toBe(4)
+  })
+
+  it('still calls a peer-reflexive candidate on a public address the internet', () => {
+    // prflx is not by itself evidence of locality — the address decides.
+    return classifyPath(
+      fakePeer(
+        {candidateType: 'host', address: PHONE},
+        {candidateType: 'prflx', address: '203.0.113.9'}
+      )
+    ).then(path => expect(path.kind).toBe('direct'))
+  })
+
+  it('does not guess local when mDNS hides one side and the other is public', async () => {
+    const path = await classifyPath(
+      fakePeer({candidateType: 'host', address: ''}, {candidateType: 'prflx', address: '203.0.113.9'})
+    )
+    expect(path.kind).toBe('direct')
+  })
+
+  it('keeps NAT traversal and relaying distinct from local', async () => {
+    const nat = await classifyPath(
+      fakePeer(
+        {candidateType: 'srflx', address: '203.0.113.9'},
+        {candidateType: 'srflx', address: '198.51.100.7'}
+      )
+    )
+    expect(nat.kind).toBe('direct')
+
+    const relayed = await classifyPath(
+      fakePeer({candidateType: 'relay', address: '203.0.113.9'}, {candidateType: 'host', address: PHONE})
+    )
+    expect(relayed.kind).toBe('relay')
+  })
+
+  it('lets the end that found evidence settle the disagreement', () => {
+    // 'direct' means "could not prove local", never "proved remote", so the
+    // side holding evidence wins. Relay outranks everything: those bytes really
+    // are going through a server.
+    expect(agreeKind('direct', 'local')).toBe('local')
+    expect(agreeKind('local', 'direct')).toBe('local')
+    expect(agreeKind('relay', 'local')).toBe('relay')
+    expect(agreeKind('direct', 'relay')).toBe('relay')
+
+    expect(agreeKind('unknown', 'direct')).toBe('direct')
+    expect(agreeKind('unknown', 'local')).toBe('local')
+    expect(agreeKind('unknown', 'unknown')).toBe('unknown')
+    expect(agreeKind('direct', 'direct')).toBe('direct')
+    expect(agreeKind('local', 'local')).toBe('local')
+  })
+
+  it('is symmetric, so neither device can be the one that is wrong', () => {
+    const kinds = ['local', 'direct', 'relay', 'unknown'] as const
+    for (const mine of kinds) {
+      for (const theirs of kinds) {
+        expect(agreeKind(mine, theirs)).toBe(agreeKind(theirs, mine))
+      }
+    }
+  })
+})
+
+describe('files arriving from the OS share sheet', () => {
+  /** Stands in for the cache the service worker parks a share in. */
+  function stubCaches(entries: {url: string; body: string; name: string; type: string}[]) {
+    const store = entries.map(entry => ({
+      request: {url: entry.url},
+      response: new Response(entry.body, {
+        headers: {
+          'content-type': entry.type,
+          'x-share-name': encodeURIComponent(entry.name),
+          'x-share-modified': '1700000000000'
+        }
+      })
+    }))
+
+    let deleted = false
+    const cache = {
+      keys: async () => store.map(item => item.request),
+      match: async (key: {url: string}) =>
+        store.find(item => item.request.url === key.url)?.response
+    }
+
+    globalThis.caches = {
+      open: async () => cache,
+      delete: async () => {
+        deleted = true
+        return true
+      }
+    } as unknown as CacheStorage
+
+    return () => deleted
+  }
+
+  afterEach(() => {
+    delete (globalThis as {caches?: unknown}).caches
+  })
+
+  it('returns the files in the order they were shared', async () => {
+    // cache.keys() has no meaningful order, so the key carries the index.
+    stubCaches([
+      {url: 'https://x/flit/shared-file/2', body: 'third', name: 'c.txt', type: 'text/plain'},
+      {url: 'https://x/flit/shared-file/0', body: 'first', name: 'a.txt', type: 'text/plain'},
+      {url: 'https://x/flit/shared-file/1', body: 'second', name: 'b.txt', type: 'text/plain'}
+    ])
+
+    const files = await takeSharedFiles()
+    expect(files.map(file => file.name)).toEqual(['a.txt', 'b.txt', 'c.txt'])
+    expect(await files[0]?.text()).toBe('first')
+    expect(files[0]?.lastModified).toBe(1700000000000)
+  })
+
+  it('carries names that would not survive a raw header', async () => {
+    stubCaches([
+      {
+        url: 'https://x/flit/shared-file/0',
+        body: 'x',
+        name: 'Ärende — photo (1).jpg',
+        type: 'image/jpeg'
+      }
+    ])
+
+    const files = await takeSharedFiles()
+    expect(files[0]?.name).toBe('Ärende — photo (1).jpg')
+    expect(files[0]?.type).toBe('image/jpeg')
+  })
+
+  it('never leaves shared copies sitting in storage', async () => {
+    const wasDeleted = stubCaches([
+      {url: 'https://x/flit/shared-file/0', body: 'x', name: 'a.txt', type: 'text/plain'}
+    ])
+
+    await takeSharedFiles()
+    expect(wasDeleted()).toBe(true)
+  })
+
+  it('reports nothing when the browser has no cache storage at all', async () => {
+    delete (globalThis as {caches?: unknown}).caches
+    expect(await takeSharedFiles()).toEqual([])
   })
 })
 

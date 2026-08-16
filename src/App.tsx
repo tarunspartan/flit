@@ -1,10 +1,11 @@
 import {useEffect, useRef, useState} from 'react'
 import {codeFromUrl} from './lib/session/RoomManager.ts'
+import {cameFromShare, takeSharedFiles} from './lib/utils/shareTarget.ts'
 import {Icon, Spinner} from './ui/components/common.tsx'
 import {DevicePanel} from './ui/components/DevicePanel.tsx'
 import {RoomScreen} from './ui/components/RoomScreen.tsx'
 import {Sidebar} from './ui/components/Sidebar.tsx'
-import {useAppUpdate} from './ui/pwa.ts'
+import {useAppUpdate, useInstallPrompt} from './ui/pwa.ts'
 import {session, useSession} from './ui/store.ts'
 import {useTheme} from './ui/theme.ts'
 
@@ -16,6 +17,7 @@ export function App() {
   useAutoRoom()
   const dragging = useWindowDrop(state.status === 'open')
   const update = useAppUpdate()
+  const install = useInstallPrompt()
   useUnloadGuard(session.hasActiveTransfers())
 
   return (
@@ -36,6 +38,18 @@ export function App() {
             {state.peers.length} connected
           </button>
         )}
+        {/* Present only when the browser can actually install on a press. */}
+        {install.available && (
+          <button
+            type="button"
+            className="fab fab--label"
+            onClick={install.install}
+            aria-label="Install flit as an app"
+          >
+            <Icon name="download" size={16} />
+            Install
+          </button>
+        )}
         <button
           type="button"
           className="fab"
@@ -51,57 +65,74 @@ export function App() {
       )}
 
       <main className="main">
-        {/*
-          Driven by whether a signaling socket is genuinely open, not by
-          `navigator.onLine`. And only while nothing is connected: once devices
-          are paired, signaling is irrelevant to the transfer.
-        */}
-        {!state.signalingReady && state.peers.length === 0 && (
-          <div className="banner banner--warn">
-            <Icon name="alert" />
-            <div>
-              <strong>Can't reach the internet</strong>
-              <span>
-                Devices need it briefly to find each other. Pairing won't work until the connection
-                is back — files themselves always move directly between devices.
-              </span>
+        {/* The scroller is `.main`; this is the column inside it, so the
+            scrollbar rides the window edge rather than the column's. */}
+        <div className="main__column">
+          {/*
+            Driven by whether a signaling socket is genuinely open, not by
+            `navigator.onLine`. And only while nothing is connected: once devices
+            are paired, signaling is irrelevant to the transfer.
+          */}
+          {state.signaling === 'retrying' && state.peers.length === 0 && (
+            <div className="banner banner--warn">
+              <Spinner />
+              <div>
+                <strong>Reconnecting…</strong>
+                <span>
+                  Looking for a way out to the internet again. This is normal right after
+                  switching networks.
+                </span>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {update.ready && (
-          <div className="banner banner--info">
-            <Icon name="retry" />
-            <div>
-              <strong>A new version is ready</strong>
-              <span>Reload when you're not in the middle of a transfer.</span>
+          {state.signaling === 'offline' && state.peers.length === 0 && (
+            <div className="banner banner--warn">
+              <Icon name="alert" />
+              <div>
+                <strong>Can't reach the internet</strong>
+                <span>
+                  Devices need it briefly to find each other. Pairing won't work until the
+                  connection is back — files themselves always move directly between devices.
+                </span>
+              </div>
             </div>
-            <button type="button" className="button button--small" onClick={update.apply}>
-              Reload
-            </button>
-          </div>
-        )}
+          )}
 
-        {state.error && <ErrorBanner state={state} />}
-        {state.status === 'starting' && (
-          <div className="starting">
-            <Spinner label="Getting ready…" />
-          </div>
-        )}
-        {state.status === 'open' && <RoomScreen state={state} />}
-        {state.status === 'ended' && (
-          <div className="ended">
-            <h2>Disconnected</h2>
-            <p>Files are no longer being shared and your code has stopped working.</p>
-            <button
-              type="button"
-              className="button button--primary"
-              onClick={() => void session.openRoom()}
-            >
-              Start over
-            </button>
-          </div>
-        )}
+          {update.ready && (
+            <div className="banner banner--info">
+              <Icon name="retry" />
+              <div>
+                <strong>A new version is ready</strong>
+                <span>Reload when you're not in the middle of a transfer.</span>
+              </div>
+              <button type="button" className="button button--small" onClick={update.apply}>
+                Reload
+              </button>
+            </div>
+          )}
+
+          {state.error && <ErrorBanner state={state} />}
+          {state.status === 'starting' && (
+            <div className="starting">
+              <Spinner label="Getting ready…" />
+            </div>
+          )}
+          {state.status === 'open' && <RoomScreen state={state} />}
+          {state.status === 'ended' && (
+            <div className="ended">
+              <h2>Disconnected</h2>
+              <p>Files are no longer being shared and your code has stopped working.</p>
+              <button
+                type="button"
+                className="button button--primary"
+                onClick={() => void session.openRoom()}
+              >
+                Start over
+              </button>
+            </div>
+          )}
+        </div>
       </main>
 
       {dragging && (
@@ -161,6 +192,10 @@ function Notices({notices}: {notices: ReturnType<typeof useSession>['notices']})
  * No "create room" button: a room exists by the time the page has painted. A
  * scanned link joins that room instead, and the code is stripped from the URL
  * so it isn't left in history or a screenshot.
+ *
+ * A launch from the OS share sheet lands here too, and the files it carries are
+ * added once the room is actually open — sharing into a room that is still
+ * starting drops them on the floor.
  */
 function useAutoRoom() {
   const started = useRef(false)
@@ -170,12 +205,23 @@ function useAutoRoom() {
     started.current = true
 
     const code = codeFromUrl()
-    if (code) {
-      history.replaceState(null, '', location.pathname + location.search)
-      void session.joinRoom(code)
-    } else {
-      void session.openRoom()
-    }
+    const shared = cameFromShare()
+
+    void (async () => {
+      let open: boolean
+      if (code) {
+        history.replaceState(null, '', location.pathname + location.search)
+        open = await session.joinRoom(code)
+      } else {
+        open = await session.openRoom()
+      }
+
+      if (!shared) return
+      const files = await takeSharedFiles()
+      // Same path as a drop or a paste from here on: offered to the room, so
+      // whatever connects next is offered them without a second action.
+      if (open && files.length > 0) session.shareFiles(files)
+    })()
   }, [])
 }
 

@@ -73,7 +73,11 @@ export function Sidebar({state, onClose}: {state: SessionSnapshot; onClose: () =
           </button>
         </header>
 
-        {tab === 'settings' ? <Settings state={state} /> : <About state={state} />}
+        {tab === 'settings' ? (
+          <Settings state={state} onJoined={dismiss} />
+        ) : (
+          <About state={state} />
+        )}
       </div>
     </div>
   )
@@ -148,7 +152,7 @@ function About({state}: {state: SessionSnapshot}) {
   )
 }
 
-function Settings({state}: {state: SessionSnapshot}) {
+function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => void}) {
   const [theme, setTheme] = useTheme()
   const [name, setName] = useState(state.selfName)
 
@@ -185,7 +189,7 @@ function Settings({state}: {state: SessionSnapshot}) {
         </div>
       </div>
 
-      <JoinByCode />
+      <JoinByCode onJoined={onJoined} />
 
       <label className="toggle">
         <input
@@ -243,18 +247,34 @@ function Settings({state}: {state: SessionSnapshot}) {
 }
 
 /** For devices that can't scan — a laptop joining from a phone's code, say. */
-function JoinByCode() {
+function JoinByCode({onJoined}: {onJoined: () => void}) {
   const [value, setValue] = useState('')
+  const [joining, setJoining] = useState(false)
+  const [failed, setFailed] = useState(false)
   const normalized = normalizeCode(value)
   const valid = isValidCode(normalized)
 
-  const submit = (event: FormEvent) => {
+  /**
+   * Only a join that actually opened the room closes the sheet — the room
+   * screen is what you want to see next, and leaving settings covering it
+   * hides the very thing you just asked for. A failure keeps the sheet up,
+   * because the error banner behind it would be invisible from here.
+   */
+  const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (valid) void session.joinRoom(normalized)
+    if (!valid || joining) return
+    setJoining(true)
+    setFailed(false)
+    if (await session.joinRoom(normalized)) {
+      onJoined()
+      return // Stays disabled through the exit animation.
+    }
+    setJoining(false)
+    setFailed(true)
   }
 
   return (
-    <form className="field" onSubmit={submit}>
+    <form className="field" onSubmit={event => void submit(event)}>
       <span className="field__label">Join with a code</span>
       {/* The placeholder is a mask, not a sample code: a realistic-looking one
           reads as something you are supposed to type in. */}
@@ -269,10 +289,14 @@ function JoinByCode() {
         spellCheck={false}
         maxLength={14}
       />
-      <button type="submit" className="button" disabled={!valid}>
-        Join
+      <button type="submit" className="button" disabled={!valid || joining}>
+        {joining ? 'Joining…' : 'Join'}
       </button>
-      <span className="field__hint">Disconnects the devices you're connected to now.</span>
+      <span className="field__hint">
+        {failed
+          ? "Couldn't open that room — check your connection and try again."
+          : "Disconnects the devices you're connected to now."}
+      </span>
     </form>
   )
 }

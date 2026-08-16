@@ -197,9 +197,17 @@ button {
     padding: 11px;
   }
 
-  .fab--devices {
+  .fab--devices,
+  .fab--label {
     padding: 11px 14px;
   }
+}
+
+/* A fab carrying a word rather than only an icon. */
+.fab--label {
+  padding: 8px 13px;
+  font: inherit;
+  font-size: 13px;
 }
 
 /* The live-device pill: green because it is a healthy, active state. */
@@ -321,10 +329,23 @@ button {
   align-self: flex-start;
 }
 
+/*
+ * The scroll container spans the full width, and the 620px column lives inside
+ * it. Constraining the scroller itself put its scrollbar on the column's right
+ * edge — floating in the middle of a wide window, detached from the edge of the
+ * screen where a scrollbar belongs.
+ */
 .main {
   flex: 1;
   /* Required for a flex child to actually scroll instead of growing. */
   min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.main__column {
   width: 100%;
   max-width: 620px;
   margin: 0 auto;
@@ -334,9 +355,6 @@ button {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
 }
 
 /*
@@ -517,6 +535,31 @@ button {
   align-items: center;
   gap: 14px;
   padding: 4px 0 2px;
+}
+
+/* Once a device is connected the code folds to a single row, so the drop
+   target comes up the screen instead of sitting below a QR nobody needs. */
+.pair--folded {
+  padding: 0;
+}
+
+.pair__reveal {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pair__reveal:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 
 .qr {
@@ -1427,7 +1470,7 @@ button {
 
 /* ---------------------------------------------------------- small screens */
 @media (max-width: 560px) {
-  .main {
+  .main__column {
     /* Clears the floating controls, ~44px tall at 14px from the top. */
     padding: 66px 13px 34px;
     gap: 14px;

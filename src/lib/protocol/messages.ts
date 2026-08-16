@@ -9,6 +9,8 @@
  * base64-inflated.
  */
 
+import type {PathKind} from '../transport/Transport.ts'
+
 export const PROTOCOL_VERSION = 1
 
 /** Peers differing in major version cannot interoperate and must say so (§73.5). */
@@ -31,6 +33,7 @@ export type MessageType =
   | 'TRANSFER_ERROR'
   | 'SESSION_APPROVE'
   | 'SESSION_END'
+  | 'PATH_NOTE'
 
 interface Base<T extends MessageType> {
   /** Protocol version, on every message (§73.1). */
@@ -40,6 +43,13 @@ interface Base<T extends MessageType> {
 
 export interface Hello extends Base<'HELLO'> {
   sessionId: string
+  /**
+   * Stable across this browser profile, unlike sessionId which is new on every
+   * page load. Lets the far side tell "two tabs of one phone" from "two phones".
+   * Optional: a peer with storage disabled has none, and an older build sends
+   * none — both simply don't dedupe.
+   */
+  deviceId?: string
   deviceName: string
   deviceKind: string
   /** What this peer is willing to receive, so the sender can fail fast. */
@@ -146,6 +156,21 @@ export interface SessionEnd extends Base<'SESSION_END'> {
   reason: 'user' | 'expired' | 'blocked' | 'full'
 }
 
+/**
+ * How this device reads the connection it shares with the peer.
+ *
+ * ICE stats are only ever a local view, and the two views of one link can
+ * disagree — see agreeKind in pathClassifier. Exchanging the verdict lets both
+ * devices settle on one answer instead of each asserting its own.
+ *
+ * Purely cosmetic: nothing routes, gates, or secures anything on this. A peer
+ * that lies about it can change a label and nothing else. Older builds don't
+ * know the type and drop it as malformed, which is why the version stays at 1.
+ */
+export interface PathNote extends Base<'PATH_NOTE'> {
+  kind: PathKind
+}
+
 export type ControlMessage =
   | Hello
   | TransferOffer
@@ -161,6 +186,7 @@ export type ControlMessage =
   | TransferError
   | SessionApprove
   | SessionEnd
+  | PathNote
 
 /** Distributes over the union so each variant keeps its own required fields. */
 type WithoutVersion<T> = T extends ControlMessage ? Omit<T, 'v'> : never
