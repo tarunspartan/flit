@@ -1,7 +1,9 @@
 import {useEffect, useRef, useState} from 'react'
 import QRCode from 'qrcode'
-import type {SessionSnapshot} from '../../lib/session/SessionManager.ts'
+import {LIMITS} from '../../lib/core/config.ts'
+import type {SessionSnapshot, SharedText} from '../../lib/session/SessionManager.ts'
 import {isTerminal} from '../../lib/transfer/states.ts'
+import {asLink} from '../../lib/utils/text.ts'
 import {session} from '../store.ts'
 import {Icon, Spinner} from './common.tsx'
 import {IncomingFile, SharedFile} from './TransferItem.tsx'
@@ -15,6 +17,12 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
   const incoming = state.incoming.filter(transfer => !isTerminal(transfer.state))
   const finished = state.incoming.filter(transfer => isTerminal(transfer.state))
   const hasContent = state.shared.length > 0 || state.incoming.length > 0
+  // Counts both directions, because that is what cancelling all of them does.
+  // Offered only past one: with a single transfer its own Cancel is right there,
+  // and a second way to do the same thing is just something else to read.
+  const active =
+    incoming.length +
+    state.shared.flatMap(file => file.transfers).filter(t => !isTerminal(t.state)).length
 
   return (
     <div className="room">
@@ -56,6 +64,29 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
           event.target.value = ''
         }}
       />
+
+      <SendText />
+
+      {state.texts.length > 0 && (
+        <section className="list">
+          <h2 className="list__title">
+            Text
+            <span className="list__count">{state.texts.length}</span>
+          </h2>
+          <ul className="list__items">
+            {state.texts.map(note => (
+              <SharedNote key={note.id} note={note} />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {active > 1 && (
+        <button type="button" className="cancel-all" onClick={() => session.cancelAll()}>
+          <Icon name="x" size={14} />
+          Cancel all {active} transfers
+        </button>
+      )}
 
       {state.shared.length > 0 && (
         <section className="list">
@@ -133,8 +164,13 @@ function Pair({state}: {state: SessionSnapshot}) {
 
   return (
     <section className="pair">
-      {state.shareUrl ? <QrCode value={state.shareUrl} /> : <div className="qr qr--placeholder" />}
-      <Code display={state.display} url={state.shareUrl} />
+      {/* Two columns once there is width for them, stacked on a phone. The
+          wrapper exists so pending-approval rows stay full width underneath
+          rather than becoming a third column. */}
+      <div className="pair__columns">
+        {state.shareUrl ? <QrCode value={state.shareUrl} /> : <div className="qr qr--placeholder" />}
+        <Code display={state.display} url={state.shareUrl} />
+      </div>
       {connected && (
         <button type="button" className="pair__reveal" onClick={() => setExpanded(false)}>
           Done
@@ -142,6 +178,131 @@ function Pair({state}: {state: SessionSnapshot}) {
       )}
       <Devices state={state} />
     </section>
+  )
+}
+
+/**
+ * A link or a note, which is often the thing you actually wanted to move.
+ *
+ * A textarea rather than an input, so a pasted paragraph is readable instead of
+ * scrolling past sideways one line at a time. It starts one row tall — looking
+ * like an input, which is what it is most of the time — grows with the content,
+ * and stops at five rows and scrolls. Enter sends, shift-Enter breaks the line.
+ */
+function SendText() {
+  const [text, setText] = useState('')
+  const box = useRef<HTMLTextAreaElement>(null)
+  const ready = text.trim().length > 0
+
+  // Height follows the content; the max-height in CSS is what caps it, so the
+  // two cannot disagree about where scrolling starts.
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [text])
+
+  const send = () => {
+    if (!ready) return
+    session.sendText(text)
+    setText('')
+  }
+
+  return (
+    <form
+      className="sendtext"
+      onSubmit={event => {
+        event.preventDefault()
+        send()
+      }}
+    >
+      <textarea
+        ref={box}
+        className="field__input sendtext__input"
+        rows={1}
+        value={text}
+        onChange={event => setText(event.target.value)}
+        onKeyDown={event => {
+          if (event.key !== 'Enter' || event.shiftKey) return
+          event.preventDefault()
+          send()
+        }}
+        placeholder="Send a link or note"
+        aria-label="Send a link or note to connected devices"
+        maxLength={LIMITS.maxTextLength}
+        autoComplete="off"
+      />
+      <button type="submit" className="button sendtext__send" disabled={!ready}>
+        Send
+      </button>
+    </form>
+  )
+}
+
+function SharedNote({note}: {note: SharedText}) {
+  const [copied, setCopied] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [clipped, setClipped] = useState(false)
+  const body = useRef<HTMLParagraphElement>(null)
+  const link = asLink(note.text)
+
+  // Measured rather than guessed from the character count: whether three lines
+  // is enough depends on the width and where the text happens to wrap. Skipped
+  // while expanded, when nothing overflows by definition.
+  useEffect(() => {
+    const el = body.current
+    if (!el || expanded) return
+    setClipped(el.scrollHeight > el.clientHeight + 1)
+  }, [note.text, expanded])
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(note.text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      // Clipboard can be blocked; the text stays selectable either way.
+    }
+  }
+
+  return (
+    <li className="note">
+      <div className="note__body">
+        {/* Never dangerouslySetInnerHTML, and never a linkifier: only a message
+            that is entirely one http(s) URL becomes clickable, so what is read
+            and what is opened cannot differ. */}
+        <p ref={body} className={`note__text ${expanded ? '' : 'note__text--clipped'}`}>
+          {note.text}
+        </p>
+        <span className="note__meta">
+          <span className="note__from">{note.from ?? 'You'}</span>
+          {clipped && (
+            <button type="button" className="note__more" onClick={() => setExpanded(v => !v)}>
+              {expanded ? 'Less' : 'More'}
+            </button>
+          )}
+        </span>
+      </div>
+      <div className="note__actions">
+        {link && (
+          <a className="button button--small" href={link} target="_blank" rel="noopener noreferrer">
+            Open
+          </a>
+        )}
+        <button type="button" className="button button--small" onClick={() => void copy()}>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+        <button
+          type="button"
+          className="button button--icon"
+          onClick={() => session.dismissText(note.id)}
+          aria-label="Remove"
+        >
+          <Icon name="x" size={15} />
+        </button>
+      </div>
+    </li>
   )
 }
 

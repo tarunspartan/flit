@@ -10,7 +10,7 @@ other over WebRTC — never uploaded to a server.
 OPEN → SCAN → DROP → DOWNLOAD → VERIFY → DONE → DISAPPEAR
 ```
 
-No sign-up, no click to get started, and **no backend to run** — not even a relay.
+No sign-up, no click to get started, and **no backend to run** — not even a TURN relay.
 
 ---
 
@@ -30,7 +30,7 @@ on a device on the same Wi-Fi — `npm run dev` binds to `0.0.0.0` precisely so 
 
 ```bash
 npm run build        # typecheck + production bundle in dist/
-npm test             # 50 unit + end-to-end protocol tests
+npm test             # 62 unit + end-to-end protocol tests
 npm run typecheck
 ```
 
@@ -51,7 +51,9 @@ keep running.
 | **Large files** | Streamed in 256 KiB chunks with backpressure on both ends. A 5 GB file never has to fit in memory on either device. |
 | **Integrity** | Every chunk is SHA-256'd; the file hash is the hash of those digests. A file that fails verification is never handed to the user. |
 | **Resume** | The receiver checkpoints durable progress. After a connection drop the sender restarts from that checkpoint, not from zero. |
+| **Text and links** | Send a URL or a note to the room without wrapping it in a file. Only a message that is entirely one http(s) URL becomes clickable. |
 | **Privacy** | No account, no upload, no file storage, no telemetry. The pairing code never reaches a server. |
+| **Installable** | A PWA. Once installed on Chromium — Android, ChromeOS, Windows — it registers as a share target, so *Share → flit* opens the app with the file already queued. Not macOS or iOS: neither wires a web app into the system share sheet. |
 
 ### Deliberately not built
 
@@ -140,6 +142,10 @@ quietly end up in your file path.
 What remains is public STUN, which only tells a browser how its own address looks from the outside.
 It never carries file data, needs no account, and costs nothing.
 
+"Relay" here means TURN — a server your *files* pass through. Introducing two devices still needs a
+signaling relay to carry the offer and answer, which is what the pinned nostr relays below do. Those
+see an opaque topic and ciphertext, never a byte of a file.
+
 The honest consequence:
 
 | Situation | Result |
@@ -160,6 +166,30 @@ There is nothing to configure to run it.
 All abuse and resource limits live in [`src/lib/core/config.ts`](src/lib/core/config.ts) —
 max file size, files per session, room TTLs, message rates, checkpoint intervals, chunk size, and
 the in-flight window. Change them there rather than hunting through the code.
+
+### Signaling relays
+
+`RELAY_URLS` in the same file pins the nostr relays used to introduce two devices. This is worth
+knowing about, because the default behaviour is a trap: Trystero picks five relays from its list of
+47 by shuffling them with a seed derived from the app id — so the choice is fixed for the whole
+app, not per room. Four of the five it picked for this app id were dead (503, 530, 502, and a
+refused connection), leaving pairing to ride on a single relay and fail whenever that one relay was
+busy.
+
+Each pinned relay was checked from a browser. Relay operators come and go, so if pairing starts
+failing intermittently, re-check the list before suspecting anything else.
+
+### Deploying
+
+`npm run build` emits a static site. [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+typechecks, tests, builds, and publishes to GitHub Pages on every push to `master`.
+
+A project site is served from `/<repo>/`, so the build needs its prefix baked in — the workflow
+passes it via `BASE_PATH` from `actions/configure-pages`. Building by hand without that variable
+targets the root, which is what dev, preview, and a custom domain all want.
+
+The Pages **Source** must be set to *GitHub Actions* rather than *Deploy from a branch*; nothing is
+committed back to the repo.
 
 ---
 
@@ -221,11 +251,13 @@ multi-chunk transfer, an empty file, a mid-transfer disconnect that must resume 
 restart, duplicate chunks, a corrupted chunk that must fail verification and withhold the file,
 a chunk that contradicts the offer, rejection, a resume with a mismatched file, and cancellation.
 
-Three real bugs were caught during development and are now regression-covered: illegal characters
-being stripped before the path-separator split (which defeated basename extraction); a stranded
-transfer when a resume rewound the send pointer while the pump was draining; and same-Wi-Fi
-connections being reported as "Internet" because the classifier only accepted private addresses,
-while home networks hand out globally-routable IPv6.
+Real bugs caught during development, now regression-covered: illegal characters being stripped
+before the path-separator split (which defeated basename extraction); a stranded transfer when a
+resume rewound the send pointer while the pump was draining; same-Wi-Fi connections reported as
+"Internet" because the classifier only accepted private addresses, while home networks hand out
+globally-routable IPv6; the two ends of one link disagreeing about that classification because a
+peer-reflexive candidate was read as NAT traversal; and the badge later flipping to "Internet" on
+its own when ICE renominated the candidate pair.
 
 ---
 

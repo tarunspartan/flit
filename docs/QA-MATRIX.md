@@ -19,7 +19,7 @@ npm run typecheck && npm test && npm run build
 
 | Check | Status |
 |---|---|
-| 50 unit + end-to-end protocol tests pass | ☐ |
+| 62 unit + end-to-end protocol tests pass | ☐ |
 | Production build succeeds | ☐ |
 | No type errors | ☐ |
 
@@ -113,11 +113,29 @@ npm run typecheck && npm test && npm run build
 | Light / dark / system themes | All readable; QR stays scannable | ☐ |
 | Speed and ETA | Smoothed, no wild jumps, no misleading "0 seconds" | ☐ |
 | Path badge per device | Matches that device's actual ICE candidate pair | ☐ |
+| Path badge agrees on both devices | Same verdict on each end, and it does not flip to "Internet" seconds after settling on "Local network" | ☐ |
+| Join by code vs by QR | Identical outcome; pasting a code with a stray space or quote still joins | ☐ |
+| Install prompt | Offered only when the browser can install, gone once installed | ☐ |
+| Share sheet (Android, installed) | flit appears; sharing a file opens it with the file queued | ☐ |
+| Disconnect a device | Ends that session; re-entering the code reconnects | ☐ |
+| Send a link | Arrives with sender name; Open only for http(s), never for `javascript:` | ☐ |
+| Swipe the bottom sheet down | Closes on a real pull; a short pull snaps back | ☐ |
+| Scroll inside the bottom sheet | Swiping never steals the scroll unless already at the top | ☐ |
+| Cancel all | Appears past one transfer; stops both directions on both devices | ☐ |
 | Whole-window drag and drop | Overlay appears anywhere on the page | ☐ |
 | Home screen | QR and drop target only — no explanatory copy | ☐ |
 | Transfer details panel | Protocol, connection, network, storage all correct | ☐ |
 | Keyboard navigation | All actions reachable | ☐ |
 | Reduced motion | Animations respect the preference | ☐ |
+
+## Recovery
+
+| Scenario | Expected | Status |
+|---|---|---|
+| Screen locks mid-transfer | Wake lock holds the screen on while bytes are moving | ☐ |
+| Peer stuck on "Reconnecting" | "Reconnect now" appears and restores the room without losing the code | ☐ |
+| One signaling relay refuses | Pairing still works; no lasting "Couldn't connect" banner | ☐ |
+| Network switch with no peers | Silent for 10s, then "Reconnecting…", only then "Can't reach the internet" | ☐ |
 
 ## Browser results
 

@@ -3,7 +3,7 @@ import {APP_ID, RELAY_URLS} from '../core/config.ts'
 import {Emitter} from '../core/events.ts'
 import {AppError} from '../core/errors.ts'
 import {deriveRoomTopic} from '../core/ids.ts'
-import {classifyPath} from './pathClassifier.ts'
+import {classifyPath, steadyPath} from './pathClassifier.ts'
 import {resolveIceServers} from './iceServers.ts'
 import {
   UNKNOWN_PATH,
@@ -180,8 +180,8 @@ export class TrysteroTransport implements Transport {
     if (!room) return
 
     for (const [peerId, connection] of Object.entries(room.getPeers())) {
-      const path = await classifyPath(connection)
       const previous = this.#paths.get(peerId)
+      const path = steadyPath(previous, await classifyPath(connection))
       this.#paths.set(peerId, path)
       // Only wake the UI when the classification actually changes; RTT drifts
       // constantly and is read from the snapshot instead.

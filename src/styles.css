@@ -329,6 +329,126 @@ button {
   align-self: flex-start;
 }
 
+/* Sits under the drop target as a peer of it: the other thing you might want to
+   move. One row until the content needs more, then five, then it scrolls. */
+.sendtext {
+  display: flex;
+  /* Bottom-aligned so the button stays level with the last line as the box
+     grows, instead of drifting to the middle of a paragraph. */
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.sendtext .sendtext__input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  /* A textarea defaults to monospace in every browser; the input it replaced
+     inherited the page font, and it should still look like the same control. */
+  font-family: var(--font);
+  /* One row: line-height 24 + padding 16 + border 2. The Send button matches. */
+  min-height: 42px;
+  /* Five rows before it starts scrolling. The height set in JS follows the
+     content and this is what caps it, so both agree on where scrolling begins. */
+  max-height: 138px;
+  line-height: 1.5;
+  text-align: left;
+  resize: none;
+  overflow-y: auto;
+}
+
+.sendtext__send {
+  flex: none;
+  min-height: 42px;
+}
+
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.note__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.note__text {
+  margin: 0;
+  font-size: 14px;
+  /* Keeps pasted line breaks, and stops a long URL widening the column. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A pasted paragraph should not make the list unreadable, so it arrives folded
+   to three lines with a way to open it. */
+.note__text--clipped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.note__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.note__from {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.note__more {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.note__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* Stops everything in both directions, so it sits above the lists rather than
+   inside one of them. Quiet by default — it is a way out, not the main action. */
+.cancel-all {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cancel-all:hover {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
 /* Only appears when a device is stuck, so it sits below the list rather than
    competing with it. */
 .popover__action {
@@ -565,6 +685,38 @@ button {
   align-items: center;
   gap: 14px;
   padding: 4px 0 2px;
+}
+
+/* Stacked on a phone, where width is the scarce thing. */
+.pair__columns {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+/* With room to spare, the code sits beside the QR instead of under it: the
+   square is already tall, and stacking pushed the drop target off the fold. */
+@media (min-width: 561px) {
+  .pair__columns {
+    flex-direction: row;
+    /* Stretch, not center: the divider is the code column's own left edge, and
+       it should run the full height of the QR rather than just the height of
+       the text next to it. */
+    align-items: stretch;
+    gap: 24px;
+  }
+
+  /* The divider is the column edge itself rather than an element, so there is
+     nothing to hide when the layout stacks again. */
+  .pair__columns > .code {
+    justify-content: center;
+    /* No align override: the column is only as wide as the code box, so the
+       base centring lines "Copy link" up under it instead of letting it hug
+       the divider. */
+    padding-left: 24px;
+    border-left: 1px solid var(--border);
+  }
 }
 
 /* Once a device is connected the code folds to a single row, so the drop
@@ -1604,7 +1756,7 @@ button {
 
 /* Landscape phones: the QR must not push everything below the fold. */
 @media (max-height: 520px) and (orientation: landscape) {
-  .pair {
+  .pair__columns {
     flex-direction: row;
     flex-wrap: wrap;
     justify-content: center;

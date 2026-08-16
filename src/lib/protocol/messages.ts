@@ -34,6 +34,7 @@ export type MessageType =
   | 'SESSION_APPROVE'
   | 'SESSION_END'
   | 'PATH_NOTE'
+  | 'TEXT_SHARE'
 
 interface Base<T extends MessageType> {
   /** Protocol version, on every message (§73.1). */
@@ -171,6 +172,18 @@ export interface PathNote extends Base<'PATH_NOTE'> {
   kind: PathKind
 }
 
+/**
+ * A link or a short note, sent to the room the way a file is.
+ *
+ * Text is untrusted display data like a filename: stripped of control and bidi
+ * characters on arrival, never rendered as markup, and never turned into a link
+ * unless the whole message parses as one.
+ */
+export interface TextShare extends Base<'TEXT_SHARE'> {
+  id: string
+  text: string
+}
+
 export type ControlMessage =
   | Hello
   | TransferOffer
@@ -187,6 +200,7 @@ export type ControlMessage =
   | SessionApprove
   | SessionEnd
   | PathNote
+  | TextShare
 
 /** Distributes over the union so each variant keeps its own required fields. */
 type WithoutVersion<T> = T extends ControlMessage ? Omit<T, 'v'> : never

@@ -2,6 +2,7 @@ import {useCallback, useEffect, useState, type FormEvent} from 'react'
 import {CODE_SYMBOLS, formatCode, isValidCode, normalizeCode} from '../../lib/core/ids.ts'
 import type {SessionSnapshot} from '../../lib/session/SessionManager.ts'
 import {session} from '../store.ts'
+import {useSheetSwipe} from '../sheetSwipe.ts'
 import {useTheme, type Theme} from '../theme.ts'
 import {Icon} from './common.tsx'
 
@@ -40,6 +41,8 @@ export function Sidebar({state, onClose}: {state: SessionSnapshot; onClose: () =
     }
   }, [dismiss])
 
+  const panelRef = useSheetSwipe(dismiss)
+
   return (
     <div
       className={`sheet ${closing ? 'is-closing' : ''}`}
@@ -48,7 +51,7 @@ export function Sidebar({state, onClose}: {state: SessionSnapshot; onClose: () =
       aria-label="About and settings"
     >
       <div className="sheet__backdrop" onClick={dismiss} />
-      <div className="sheet__panel">
+      <div className="sheet__panel" ref={panelRef}>
         {/* Grab handle: on phones this panel is a bottom sheet. */}
         <div className="sheet__grip" aria-hidden="true" />
         <header className="sheet__header">

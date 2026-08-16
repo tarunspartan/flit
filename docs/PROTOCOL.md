@@ -48,9 +48,11 @@ the negotiated chunk size, or if `byteLength` disagrees with the bytes actually 
 
 | Message | Direction | Purpose |
 |---|---|---|
-| `HELLO` | both | Device name/kind, session id, resume support. The only message accepted before a device is admitted. |
+| `HELLO` | both | Device name/kind, session id, resume support, and an optional `deviceId`. The only message accepted before a device is admitted. |
 | `SESSION_APPROVE` | host → guest | Device trust decision. Only sent when per-device approval is switched on. |
 | `SESSION_END` | both | `user` \| `expired` \| `blocked` \| `full`. |
+| `PATH_NOTE` | both | How this device reads the shared connection. Cosmetic only — see [Agreeing on the path](#agreeing-on-the-path). |
+| `TEXT_SHARE` | both | A link or short note, capped at `maxTextLength`. Untrusted display text, handled like a filename. |
 | `TRANSFER_OFFER` | sender → receiver | File identity and chunking plan. |
 | `TRANSFER_ACCEPT` | receiver → sender | Go-ahead, **from chunk N**. Sent on consent and again after a resume. |
 | `TRANSFER_REJECT` | receiver → sender | `declined` \| `too-large` \| `no-storage` \| `busy`. |
@@ -158,8 +160,51 @@ below 2 MB. This is separate from a user pause so neither can silently override 
 
 ---
 
+## Agreeing on the path
+
+ICE statistics are a local view, and the two ends of one connection routinely disagree about it.
+The classic case: a phone that cannot resolve the other device's mDNS `.local` name learns its
+address from an arriving STUN check instead, recording it as **peer-reflexive** rather than *host*.
+Same link, same LAN, two different readings — one device saying "Local network" while the other
+says "Internet".
+
+So each device publishes its own reading as `PATH_NOTE` and both reconcile with the same rule:
+
+- `relay` wins — those bytes really are going through a server.
+- otherwise `local` beats `direct`, because `local` requires address evidence while `direct` only
+  ever means *locality could not be shown*, never that the link is remote.
+
+The rule is symmetric, so neither device can be the one that is wrong. The same reasoning applies
+over time: ICE renominates candidate pairs after connecting, and a pair whose remote half becomes
+server-reflexive reads as `direct` about two devices that never moved. A proven `local` is
+therefore held until the peer disconnects, rather than being unproven by a later poll.
+
+`PATH_NOTE` is cosmetic. Nothing routes, gates, or secures anything on it, and a peer that lies
+about it changes a label and nothing else.
+
+---
+
+## Device identity
+
+`HELLO` may carry a `deviceId` — a random value minted once per browser profile and kept in
+`localStorage`. It exists because Trystero's peer id is regenerated on every page load, so two tabs
+of one phone arrive as two unrelated devices: scan a code twice and the room fills with duplicates
+of you, each offered its own copy of every file.
+
+With it, a second connection from a device already in the room retires the first, and a peer that is
+really another tab of *this* device is kept out of the roster entirely rather than disconnected —
+two tabs each ending the other is a race with no winner.
+
+It is optional. A browser with storage disabled, or an older build, sends none and simply does not
+deduplicate.
+
+---
+
 ## Versioning
 
 `PROTOCOL_VERSION = 1`. A message with a version outside the compatible range is rejected with a
 distinct `incompatible-version` reason, surfaced as "The other device is running a different
 version — reload the page on both devices."
+
+`PATH_NOTE` and `HELLO.deviceId` were both added without a version bump: a build that does not know
+them drops the message as malformed and carries on, which is the intended degradation.

@@ -130,6 +130,34 @@ export function agreeKind(mine: PathKind, theirs: PathKind): PathKind {
   return 'unknown'
 }
 
+/**
+ * Holds a proven verdict against a later reading that merely fails to reprove it.
+ *
+ * ICE keeps checking after a call connects and renominates the candidate pair
+ * when a better one appears. A pair that was (host, prflx) on private addresses
+ * can become one whose remote half is server-reflexive, and the classifier then
+ * honestly reports 'direct' — so a same-Wi-Fi link read "Local network" and
+ * flipped to "Internet" a few seconds later, with nothing about the two devices
+ * having changed.
+ *
+ * The same rule as agreeKind, applied over time instead of across peers: 'local'
+ * comes from address evidence, 'direct' is what gets reported when locality
+ * could not be shown this time. Two devices do not stop sharing a network
+ * because ICE picked a different pair. 'relay' is positive evidence of its own
+ * and always wins, and the cache is dropped when a peer leaves, so a device that
+ * genuinely moves networks is judged afresh on its next connection.
+ */
+export function steadyPath(previous: NetworkPath | undefined, fresh: NetworkPath): NetworkPath {
+  if (!previous) return fresh
+  if (fresh.kind === 'relay') return fresh
+  // No selected pair this round says nothing at all about the link.
+  if (fresh.kind === 'unknown') return {...previous, roundTripMs: fresh.roundTripMs}
+  if (previous.kind === 'local' && fresh.kind === 'direct') {
+    return {...previous, roundTripMs: fresh.roundTripMs}
+  }
+  return fresh
+}
+
 /** Applies an agreed kind to a locally-measured path, keeping our own RTT. */
 export function withKind(path: NetworkPath, kind: PathKind): NetworkPath {
   return kind === path.kind ? path : {...path, kind, network: NETWORK_LABEL[kind]}

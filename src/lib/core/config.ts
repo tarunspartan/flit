@@ -33,6 +33,8 @@ export const LIMITS = {
   maxFilesPerSession: 500,
   maxQueuedBytes: 256 * 1024 ** 3,
   maxFilenameLength: 255,
+  /** A link or a short note. Well inside maxControlMessageBytes even in UTF-8. */
+  maxTextLength: 2000,
   maxControlMessageBytes: 16 * 1024,
   /** Control messages accepted from a peer per second before we start dropping. */
   maxControlMessagesPerSecond: 200,
