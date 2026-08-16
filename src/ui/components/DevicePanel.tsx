@@ -50,7 +50,7 @@ export function DevicePanel({
               <button
                 type="button"
                 className="button button--icon"
-                onClick={() => session.blockPeer(peer.id)}
+                onClick={() => session.disconnectPeer(peer.id)}
                 aria-label={`Disconnect ${peer.name}`}
                 title="Disconnect"
               >
