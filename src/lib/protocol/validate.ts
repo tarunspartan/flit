@@ -54,7 +54,8 @@ const TYPES: readonly MessageType[] = [
   'TRANSFER_ERROR',
   'SESSION_APPROVE',
   'SESSION_END',
-  'PATH_NOTE'
+  'PATH_NOTE',
+  'TEXT_SHARE'
 ]
 
 export function parseControl(raw: unknown): ParseResult {
@@ -161,6 +162,9 @@ function validateBody(m: Rec): boolean {
 
     case 'PATH_NOTE':
       return oneOf(m.kind, PATH_KINDS)
+
+    case 'TEXT_SHARE':
+      return id(m.id) && str(m.text, LIMITS.maxTextLength)
 
     default:
       return false

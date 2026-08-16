@@ -118,6 +118,10 @@ npm run typecheck && npm test && npm run build
 | Install prompt | Offered only when the browser can install, gone once installed | ☐ |
 | Share sheet (Android, installed) | flit appears; sharing a file opens it with the file queued | ☐ |
 | Disconnect a device | Ends that session; re-entering the code reconnects | ☐ |
+| Send a link | Arrives with sender name; Open only for http(s), never for `javascript:` | ☐ |
+| Swipe the bottom sheet down | Closes on a real pull; a short pull snaps back | ☐ |
+| Scroll inside the bottom sheet | Swiping never steals the scroll unless already at the top | ☐ |
+| Cancel all | Appears past one transfer; stops both directions on both devices | ☐ |
 | Whole-window drag and drop | Overlay appears anywhere on the page | ☐ |
 | Home screen | QR and drop target only — no explanatory copy | ☐ |
 | Transfer details panel | Protocol, connection, network, storage all correct | ☐ |

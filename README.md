@@ -51,6 +51,7 @@ keep running.
 | **Large files** | Streamed in 256 KiB chunks with backpressure on both ends. A 5 GB file never has to fit in memory on either device. |
 | **Integrity** | Every chunk is SHA-256'd; the file hash is the hash of those digests. A file that fails verification is never handed to the user. |
 | **Resume** | The receiver checkpoints durable progress. After a connection drop the sender restarts from that checkpoint, not from zero. |
+| **Text and links** | Send a URL or a note to the room without wrapping it in a file. Only a message that is entirely one http(s) URL becomes clickable. |
 | **Privacy** | No account, no upload, no file storage, no telemetry. The pairing code never reaches a server. |
 | **Installable** | A PWA. Once installed on Chromium — Android, ChromeOS, Windows — it registers as a share target, so *Share → flit* opens the app with the file already queued. Not macOS or iOS: neither wires a web app into the system share sheet. |
 

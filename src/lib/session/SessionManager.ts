@@ -23,6 +23,8 @@ import {
   sanitizeDeviceName,
   saveDeviceName
 } from '../utils/device.ts'
+import {randomId} from '../core/ids.ts'
+import {sanitizeSharedText} from '../utils/text.ts'
 import {RoomManager, type RoomRole} from './RoomManager.ts'
 
 export type SessionStatus = 'starting' | 'open' | 'ended'
@@ -55,6 +57,15 @@ export interface PeerInfo {
   path: NetworkPath
 }
 
+/** A link or note shared with the room. Local only; never persisted. */
+export interface SharedText {
+  id: string
+  text: string
+  /** Who sent it, or null when it was this device. */
+  from: string | null
+  at: number
+}
+
 export interface SessionNotice {
   id: string
   title: string
@@ -82,6 +93,7 @@ export interface SessionSnapshot {
   incoming: TransferView[]
   error: {code: ErrorCode; title: string; message: string; retryable: boolean} | null
   notices: SessionNotice[]
+  texts: SharedText[]
   storage: StorageSupport
   localOnly: boolean
   requireApproval: boolean
@@ -143,6 +155,7 @@ export class SessionManager {
   #busy = false
   #error: AppError | null = null
   #notices: SessionNotice[] = []
+  #texts: SharedText[] = []
   #storage: StorageSupport = describeStorageSupport()
   #prefs: StoragePreferences = {alwaysChooseLocation: false}
   #localOnly = false
@@ -183,6 +196,7 @@ export class SessionManager {
       incoming: this.#transfers.incoming(),
       error: this.#error ? {code: this.#error.code, ...friendly(this.#error)} : null,
       notices: this.#notices,
+      texts: this.#texts,
       storage: this.#storage,
       localOnly: this.#localOnly,
       requireApproval: this.#requireApproval,
@@ -399,6 +413,12 @@ export class SessionManager {
       case 'SESSION_END':
         this.#onSessionEnd(peerId, msg.reason)
         break
+      case 'TEXT_SHARE': {
+        const text = sanitizeSharedText(msg.text, LIMITS.maxTextLength)
+        // Empty after sanitizing means it was nothing but control characters.
+        if (text) this.#addText({id: msg.id, text, from: peer.name, at: Date.now()})
+        break
+      }
       case 'PATH_NOTE':
         peer.peerKind = msg.kind
         if (peer.agreeTimer !== null) clearTimeout(peer.agreeTimer)
@@ -600,6 +620,39 @@ export class SessionManager {
   }
   cancelAll(): void {
     this.#transfers.cancelAll()
+  }
+
+  /**
+   * Sends a link or note to every connected device.
+   *
+   * Kept out of the transfer machinery on purpose: there is no consent step, no
+   * chunking and nothing to verify, and routing a URL through the file queue
+   * would mean a picker prompt for four hundred bytes.
+   */
+  sendText(input: string): void {
+    const text = sanitizeSharedText(input, LIMITS.maxTextLength)
+    if (!text || this.#status !== 'open') return
+
+    const note: SharedText = {id: randomId(), text, from: null, at: Date.now()}
+    this.#addText(note)
+    for (const peer of this.#peers.values()) {
+      if (!peer.approved || !peer.present || peer.isSelf) continue
+      void this.#transport
+        ?.sendControl(peer.id, message({t: 'TEXT_SHARE', id: note.id, text}))
+        .catch(() => {})
+    }
+  }
+
+  dismissText(id: string): void {
+    this.#texts = this.#texts.filter(note => note.id !== id)
+    this.#changed()
+  }
+
+  #addText(note: SharedText): void {
+    // Newest first, and bounded — this is a scratchpad, not a history.
+    if (this.#texts.some(existing => existing.id === note.id)) return
+    this.#texts = [note, ...this.#texts].slice(0, 20)
+    this.#changed()
   }
   pause(id: string): void {
     this.#transfers.pause(id)
