@@ -6,9 +6,10 @@
  * shared files in a cache and redirects here with a marker in the query string.
  * This module notices the marker and hands the files back.
  *
- * Android and ChromeOS support this once the app is installed. iOS has no Web
- * Share Target at all, so on iPhone and iPad these functions simply never find
- * anything — nothing to feature-detect, nothing to fail.
+ * Chromium supports this once the app is installed — Android, ChromeOS and
+ * Windows. macOS and iOS do not: neither wires a web app into the system share
+ * sheet, so on a Mac or an iPhone these functions simply never find anything.
+ * Nothing to feature-detect, nothing to fail.
  */
 
 /** Must match SHARE_CACHE in public/share-target.js. */

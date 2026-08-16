@@ -8,7 +8,7 @@ import {canTransition, isTerminal} from '../src/lib/transfer/states.ts'
 import {FlowController} from '../src/lib/transfer/FlowController.ts'
 import {sanitizeFilename, sanitizeRelativePath, uniqueFilename} from '../src/lib/utils/filename.ts'
 import {SpeedMeter} from '../src/lib/utils/speed.ts'
-import {agreeKind, classifyPath, isPrivate, sameSubnet} from '../src/lib/transport/pathClassifier.ts'
+import {agreeKind, classifyPath, isPrivate, sameSubnet, steadyPath} from '../src/lib/transport/pathClassifier.ts'
 import {formatBytes, formatDuration} from '../src/lib/utils/format.ts'
 import {takeSharedFiles} from '../src/lib/utils/shareTarget.ts'
 
@@ -448,6 +448,51 @@ describe('both ends of one link agree on what it is', () => {
     expect(agreeKind('unknown', 'unknown')).toBe('unknown')
     expect(agreeKind('direct', 'direct')).toBe('direct')
     expect(agreeKind('local', 'local')).toBe('local')
+  })
+
+  it('does not let a later poll unprove a link it already proved local', async () => {
+    // ICE renominates after connecting, and the new pair's remote half is often
+    // server-reflexive — the classifier then says 'direct' about two devices
+    // that never moved. That is what made a same-Wi-Fi badge flip to "Internet"
+    // seconds after showing "Local network".
+    const local = await classifyPath(
+      fakePeer(
+        {candidateType: 'host', address: '192.168.1.20'},
+        {candidateType: 'host', address: '192.168.1.31'}
+      )
+    )
+    const renominated = await classifyPath(
+      fakePeer(
+        {candidateType: 'host', address: '192.168.1.20'},
+        {candidateType: 'srflx', address: '203.0.113.9'}
+      )
+    )
+    expect(renominated.kind).toBe('direct')
+    expect(steadyPath(local, renominated).kind).toBe('local')
+    // RTT is still whatever the latest poll measured.
+    expect(steadyPath(local, renominated).roundTripMs).toBe(renominated.roundTripMs)
+  })
+
+  it('still reports a relay, and still starts from nothing', async () => {
+    const local = await classifyPath(
+      fakePeer(
+        {candidateType: 'host', address: '192.168.1.20'},
+        {candidateType: 'host', address: '192.168.1.31'}
+      )
+    )
+    const relayed = await classifyPath(
+      fakePeer({candidateType: 'relay', address: '203.0.113.9'}, {candidateType: 'host', address: '192.168.1.31'})
+    )
+    // Relay is positive evidence, so it overrides a proven local.
+    expect(steadyPath(local, relayed).kind).toBe('relay')
+    // A poll with no selected pair says nothing and must not downgrade either.
+    const nothing = {...local, kind: 'unknown' as const}
+    expect(steadyPath(local, nothing).kind).toBe('local')
+    // With no history there is nothing to hold on to.
+    expect(steadyPath(undefined, relayed).kind).toBe('relay')
+    // 'direct' is not sticky the way 'local' is: it was never proof of anything.
+    const direct = {...local, kind: 'direct' as const}
+    expect(steadyPath(direct, local).kind).toBe('local')
   })
 
   it('is symmetric, so neither device can be the one that is wrong', () => {
