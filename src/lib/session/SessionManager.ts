@@ -27,8 +27,16 @@ import {RoomManager, type RoomRole} from './RoomManager.ts'
 
 export type SessionStatus = 'starting' | 'open' | 'ended'
 
-/** How long signaling must stay unreachable before the UI mentions it. */
+/**
+ * Losing signaling is usually a network handover, not an outage, so the UI says
+ * nothing at all for the first stretch, then says it is retrying, and only calls
+ * it broken once it has stayed gone. Announcing "can't reach the internet" for
+ * something that fixes itself in seconds is worse than saying nothing.
+ */
 const SIGNALING_GRACE_MS = 10_000
+const SIGNALING_OFFLINE_MS = 30_000
+
+export type SignalingHealth = 'ok' | 'retrying' | 'offline'
 
 /**
  * How long to wait for the peer's own read of the connection before showing
@@ -56,8 +64,8 @@ export interface SessionNotice {
 
 export interface SessionSnapshot {
   status: SessionStatus
-  /** False only when no signaling relay has been reachable for a while. */
-  signalingReady: boolean
+  /** Only leaves 'ok' once no signaling relay has been reachable for a while. */
+  signaling: SignalingHealth
   /** 'guest' when this room was entered by code rather than opened here. */
   role: RoomRole | null
   /** True once any device has joined — distinguishes "empty" from "not found". */
@@ -129,7 +137,7 @@ export class SessionManager {
   #peers = new Map<PeerId, PeerRecord>()
   #blocked = new Set<PeerId>()
   #everHadPeer = false
-  #signalingOk = true
+  #signaling: SignalingHealth = 'ok'
   #signalingBadSince: number | null = null
   #healthTimer: ReturnType<typeof setInterval> | null = null
   #busy = false
@@ -161,7 +169,7 @@ export class SessionManager {
     const peers = [...this.#peers.values()].filter(peer => !peer.isSelf)
     return {
       status: this.#status,
-      signalingReady: this.#signalingOk,
+      signaling: this.#signaling,
       role: room?.role ?? null,
       everHadPeer: this.#everHadPeer,
       code: room?.code ?? null,
@@ -634,17 +642,23 @@ export class SessionManager {
   #watchSignaling(): void {
     if (this.#healthTimer !== null) clearInterval(this.#healthTimer)
     this.#signalingBadSince = null
-    this.#signalingOk = true
+    this.#signaling = 'ok'
 
     this.#healthTimer = setInterval(() => {
       const now = Date.now()
       if (this.#transport?.signalingReady() === true) this.#signalingBadSince = null
       else this.#signalingBadSince ??= now
 
-      const ok =
-        this.#signalingBadSince === null || now - this.#signalingBadSince < SIGNALING_GRACE_MS
-      if (ok !== this.#signalingOk) {
-        this.#signalingOk = ok
+      const downFor = this.#signalingBadSince === null ? 0 : now - this.#signalingBadSince
+      const next: SignalingHealth =
+        downFor < SIGNALING_GRACE_MS
+          ? 'ok'
+          : downFor < SIGNALING_OFFLINE_MS
+            ? 'retrying'
+            : 'offline'
+
+      if (next !== this.#signaling) {
+        this.#signaling = next
         this.#changed()
       }
     }, 3000)
@@ -687,7 +701,7 @@ export class SessionManager {
   async #teardownTransport(): Promise<void> {
     if (this.#healthTimer !== null) clearInterval(this.#healthTimer)
     this.#healthTimer = null
-    this.#signalingOk = true
+    this.#signaling = 'ok'
     this.#signalingBadSince = null
     for (const off of this.#unsubscribe) off()
     this.#unsubscribe = []

@@ -282,13 +282,34 @@ const STORAGE_LABEL: Record<string, string> = {
   memory: 'In memory (small files only)'
 }
 
+/**
+ * Seconds the transfer actually ran, or null while it is still running.
+ *
+ * Includes the verification tail, which finalizes an already-built hash tree
+ * rather than re-reading the file, so it is short enough not to distort this.
+ */
+function elapsedSeconds(transfer: TransferView): number | null {
+  if (transfer.startedAt === null || transfer.endedAt === null) return null
+  const seconds = (transfer.endedAt - transfer.startedAt) / 1000
+  return seconds > 0 ? seconds : null
+}
+
 function Details({transfer}: {transfer: TransferView}) {
+  const done = transfer.state === 'COMPLETED'
+  const elapsed = elapsedSeconds(transfer)
+
   const rows: [string, string][] = [
     ['From', transfer.peerName],
     ['Transferred', `${formatBytes(transfer.bytesTransferred)} / ${formatBytes(transfer.size)}`],
-    ['Speed', formatSpeed(transfer.speed)],
+    // The live meter reads from a rolling window, so it has nothing to report
+    // once the bytes stop. Finished transfers get the average over the run
+    // instead of an empty row.
+    done
+      ? ['Average speed', formatSpeed(elapsed === null ? null : transfer.bytesTransferred / elapsed)]
+      : ['Speed', formatSpeed(transfer.speed)],
     ['Type', transfer.mimeType]
   ]
+  if (done && elapsed !== null) rows.push(['Took', formatDuration(elapsed)])
   if (transfer.storageKind) {
     rows.push(['Storage', STORAGE_LABEL[transfer.storageKind] ?? transfer.storageKind])
   }

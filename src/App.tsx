@@ -73,7 +73,20 @@ export function App() {
             `navigator.onLine`. And only while nothing is connected: once devices
             are paired, signaling is irrelevant to the transfer.
           */}
-          {!state.signalingReady && state.peers.length === 0 && (
+          {state.signaling === 'retrying' && state.peers.length === 0 && (
+            <div className="banner banner--warn">
+              <Spinner />
+              <div>
+                <strong>Reconnecting…</strong>
+                <span>
+                  Looking for a way out to the internet again. This is normal right after
+                  switching networks.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {state.signaling === 'offline' && state.peers.length === 0 && (
             <div className="banner banner--warn">
               <Icon name="alert" />
               <div>
