@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest'
 import type {Bytes} from '../src/lib/core/bytes.ts'
-import {CHUNK_SIZE} from '../src/lib/core/config.ts'
+import {CHECKPOINT_INTERVAL_BYTES, CHUNK_SIZE, MAX_IN_FLIGHT_CHUNKS} from '../src/lib/core/config.ts'
 import {decodeChunk, encodeChunk} from '../src/lib/protocol/frame.ts'
 import type {ControlMessage, TransferOffer} from '../src/lib/protocol/messages.ts'
 import {parseControl} from '../src/lib/protocol/validate.ts'
@@ -23,8 +23,26 @@ class Wire {
   sender: SendTransfer | null = null
 
   deliveredChunks: number[] = []
+  /**
+   * Checkpoints the *sender* has actually received, and the furthest one.
+   *
+   * Not the same as what the receiver has sent: a checkpoint crosses the wire
+   * asynchronously, and one still in flight when the link drops is one the
+   * sender cannot resume from. Only what has landed here counts.
+   */
+  checkpointsReceived = 0
+  checkpointChunks = 0
   /** Set to corrupt, drop, or intercept a chunk on its way across. */
   onChunk: ((index: number, payload: Bytes) => Bytes | null) | null = null
+  /**
+   * Set to stall the wire before a chunk crosses.
+   *
+   * The sender pipelines and the receiver writes through a serial queue, so by
+   * default the sender empties the whole file before the receiver has written
+   * much of it — the harness has no backpressure, where a real DataChannel has
+   * plenty. A test that needs the receiver to keep up says so here.
+   */
+  holdChunk: ((index: number) => Promise<void>) | null = null
 
   senderLink: PeerLink = {
     isConnected: () => this.connected,
@@ -39,6 +57,9 @@ class Wire {
       if (!this.connected) throw new Error('link down')
       const decoded = decodeChunk(frame, CHUNK_SIZE)
       if (!decoded) throw new Error('undecodable frame')
+
+      if (this.holdChunk) await this.holdChunk(decoded.index)
+      if (!this.connected) throw new Error('link down')
 
       let payload: Bytes | null = decoded.payload
       if (this.onChunk) payload = this.onChunk(decoded.index, decoded.payload)
@@ -84,6 +105,10 @@ class Wire {
   #toSender(msg: ControlMessage): void {
     const parsed = parseControl(JSON.parse(JSON.stringify(msg)))
     if (!parsed.ok) throw new Error(`receiver emitted an invalid message: ${parsed.reason}`)
+    if (parsed.message.t === 'TRANSFER_CHECKPOINT') {
+      this.checkpointsReceived++
+      this.checkpointChunks = Math.max(this.checkpointChunks, parsed.message.chunks)
+    }
     this.sender?.handleMessage(parsed.message)
   }
 
@@ -171,16 +196,47 @@ describe('transfer end to end', () => {
   })
 
   it('resumes from the last checkpoint instead of restarting', async () => {
-    // Large enough that a byte-interval checkpoint lands before the drop.
-    const {file, data} = makeFile(CHUNK_SIZE * 48)
+    // Long enough for a second checkpoint, short enough that the stretch after
+    // it is clearly shorter than the stretch before.
+    const chunksPerCheckpoint = CHECKPOINT_INTERVAL_BYTES / CHUNK_SIZE
+    const {file, data} = makeFile(CHUNK_SIZE * (chunksPerCheckpoint + 16))
     const wire = start(file)
 
     await waitFor(() => wire.receiver !== null)
 
-    // Cut the link at a fixed chunk so the test never races the transfer.
+    // Hold the sender to roughly the window a real link would allow. Without
+    // this the sender reaches the end of the file before the receiver's write
+    // queue has drained far enough to acknowledge anything, so no checkpoint
+    // ever arrives in time to resume from — which is the condition the old
+    // fixed-index cut was silently gambling on.
+    const chunksWritten = () =>
+      Math.floor(wire.receiver!.view().bytesTransferred / CHUNK_SIZE)
+    wire.holdChunk = async index => {
+      // Releasing on disconnect matters as much as the window itself: the
+      // receiver stops writing the moment the link is cut, so a chunk parked
+      // here would wait forever, and the sends still holding the in-flight
+      // window would never fail — leaving the sender unable to resume at all.
+      // A dropped link fails its sends; it does not park them.
+      await waitFor(
+        () => !wire.connected || chunksWritten() + MAX_IN_FLIGHT_CHUNKS >= index,
+        5_000
+      )
+    }
+
+    // Cut once the sender is holding the *second* checkpoint, rather than at a
+    // fixed chunk index. The old version cut at chunk 40 and assumed a useful
+    // checkpoint had arrived by then; about one run in thirty it had not, the
+    // sender fell back to the first one, and resent nearly the whole file.
+    //
+    // Counting checkpoints rather than testing their value is deliberate. The
+    // first is emitted on the very first chunk, because lastCheckpointAt starts
+    // at zero and any elapsed time beats the interval, so it covers ~1 chunk and
+    // is no use to resume from. The second is the first real one. Its exact
+    // value can't be predicted either: it reports *contiguous* chunks, which
+    // trails what has been written by the size of the in-flight window.
     let cut = false
-    wire.onChunk = (index, payload) => {
-      if (index >= 40 && !cut) {
+    wire.onChunk = (_index, payload) => {
+      if (!cut && wire.checkpointsReceived >= 2) {
         cut = true
         wire.drop()
         return null
@@ -189,8 +245,14 @@ describe('transfer end to end', () => {
     }
 
     await wire.receiver!.accept()
-    await waitFor(() => wire.sender!.state === 'RECONNECTING')
+    // COMPLETED is included so that running out of file fails here, loudly and
+    // at once, instead of hanging until the suite timeout.
+    await waitFor(() => wire.sender!.state === 'RECONNECTING' || wire.sender!.state === 'COMPLETED')
+    expect(cut, 'transfer finished before a checkpoint reached the sender').toBe(true)
+    expect(wire.sender!.state).toBe('RECONNECTING')
+
     const deliveredBeforeDrop = wire.deliveredChunks.length
+    const resumeFrom = wire.checkpointChunks
     wire.deliveredChunks = []
 
     wire.restore()
@@ -199,6 +261,8 @@ describe('transfer end to end', () => {
     // The whole point: it picked up mid-file rather than starting over.
     const firstAfterResume = Math.min(...wire.deliveredChunks)
     expect(firstAfterResume).toBeGreaterThan(0)
+    // Nothing below the checkpoint is sent twice — that is what a checkpoint is.
+    expect(firstAfterResume).toBeGreaterThanOrEqual(resumeFrom)
     expect(wire.deliveredChunks.length).toBeLessThan(deliveredBeforeDrop)
 
     expectSameBytes(new Uint8Array(await wire.receiver!.received!.arrayBuffer()), data)

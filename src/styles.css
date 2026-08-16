@@ -197,9 +197,17 @@ button {
     padding: 11px;
   }
 
-  .fab--devices {
+  .fab--devices,
+  .fab--label {
     padding: 11px 14px;
   }
+}
+
+/* A fab carrying a word rather than only an icon. */
+.fab--label {
+  padding: 8px 13px;
+  font: inherit;
+  font-size: 13px;
 }
 
 /* The live-device pill: green because it is a healthy, active state. */
@@ -321,10 +329,23 @@ button {
   align-self: flex-start;
 }
 
+/*
+ * The scroll container spans the full width, and the 620px column lives inside
+ * it. Constraining the scroller itself put its scrollbar on the column's right
+ * edge — floating in the middle of a wide window, detached from the edge of the
+ * screen where a scrollbar belongs.
+ */
 .main {
   flex: 1;
   /* Required for a flex child to actually scroll instead of growing. */
   min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.main__column {
   width: 100%;
   max-width: 620px;
   margin: 0 auto;
@@ -334,9 +355,6 @@ button {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
 }
 
 /*
@@ -1452,7 +1470,7 @@ button {
 
 /* ---------------------------------------------------------- small screens */
 @media (max-width: 560px) {
-  .main {
+  .main__column {
     /* Clears the floating controls, ~44px tall at 14px from the top. */
     padding: 66px 13px 34px;
     gap: 14px;
