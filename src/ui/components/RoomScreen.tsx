@@ -45,6 +45,11 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
         ref={fileInput}
         type="file"
         multiple
+        // Every type is accepted, but saying so explicitly matters on Android:
+        // an input with no accept at all makes Chrome offer the camera and
+        // sound recorder as sources, and it asks for those permissions before
+        // the chooser even opens. Nothing here ever touches a microphone.
+        accept="*/*"
         hidden
         onChange={event => {
           if (event.target.files) session.shareFiles([...event.target.files])
