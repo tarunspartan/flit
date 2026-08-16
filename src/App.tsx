@@ -73,7 +73,7 @@ export function App() {
             `navigator.onLine`. And only while nothing is connected: once devices
             are paired, signaling is irrelevant to the transfer.
           */}
-          {state.signaling === 'retrying' && state.peers.length === 0 && (
+          {state.signaling === 'retrying' && !state.peers.some(peer => peer.present) && (
             <div className="banner banner--warn">
               <Spinner />
               <div>
@@ -86,7 +86,7 @@ export function App() {
             </div>
           )}
 
-          {state.signaling === 'offline' && state.peers.length === 0 && (
+          {state.signaling === 'offline' && !state.peers.some(peer => peer.present) && (
             <div className="banner banner--warn">
               <Icon name="alert" />
               <div>
