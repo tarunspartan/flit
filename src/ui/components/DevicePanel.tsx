@@ -59,6 +59,22 @@ export function DevicePanel({
             </li>
           ))}
         </ul>
+
+        {/* Trystero re-announces every few seconds, so a device that is merely
+            out of range comes back on its own. This is for the case it cannot
+            fix: a phone whose tab was frozen — by the file picker, or by the
+            screen locking — and whose sockets never woke with it. */}
+        {state.peers.some(peer => !peer.present) && (
+          <button
+            type="button"
+            className="popover__action"
+            onClick={() => void session.reconnect()}
+            disabled={state.busy}
+          >
+            <Icon name="retry" size={14} />
+            {state.busy ? 'Reconnecting…' : 'Reconnect now'}
+          </button>
+        )}
       </div>
     </>
   )

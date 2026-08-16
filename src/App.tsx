@@ -6,6 +6,7 @@ import {DevicePanel} from './ui/components/DevicePanel.tsx'
 import {RoomScreen} from './ui/components/RoomScreen.tsx'
 import {Sidebar} from './ui/components/Sidebar.tsx'
 import {useAppUpdate, useInstallPrompt} from './ui/pwa.ts'
+import {useWakeLock} from './ui/wakeLock.ts'
 import {session, useSession} from './ui/store.ts'
 import {useTheme} from './ui/theme.ts'
 
@@ -18,7 +19,9 @@ export function App() {
   const dragging = useWindowDrop(state.status === 'open')
   const update = useAppUpdate()
   const install = useInstallPrompt()
-  useUnloadGuard(session.hasActiveTransfers())
+  const busy = session.hasActiveTransfers()
+  useUnloadGuard(busy)
+  useWakeLock(busy)
 
   return (
     <div className="app">

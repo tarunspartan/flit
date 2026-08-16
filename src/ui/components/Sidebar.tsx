@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useState, type FormEvent} from 'react'
-import {formatCode, isValidCode, normalizeCode} from '../../lib/core/ids.ts'
+import {CODE_SYMBOLS, formatCode, isValidCode, normalizeCode} from '../../lib/core/ids.ts'
 import type {SessionSnapshot} from '../../lib/session/SessionManager.ts'
 import {session} from '../store.ts'
 import {useTheme, type Theme} from '../theme.ts'
@@ -248,11 +248,18 @@ function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => vo
 
 /** For devices that can't scan — a laptop joining from a phone's code, say. */
 function JoinByCode({onJoined}: {onJoined: () => void}) {
-  const [value, setValue] = useState('')
+  // State is the code itself, not what was typed: normalized on the way in and
+  // cut to length there. Keeping raw text and tidying it only for display meant
+  // a thirteenth symbol lived on invisibly in the state, quietly failing
+  // validation while the field looked complete.
+  const [code, setCode] = useState('')
   const [joining, setJoining] = useState(false)
   const [failed, setFailed] = useState(false)
-  const normalized = normalizeCode(value)
-  const valid = isValidCode(normalized)
+  const valid = isValidCode(code)
+  // Something was entered but it is not a whole code. Shown as a ring on the
+  // field rather than a sentence below it: the field is where the problem is,
+  // and the hint underneath is about what joining does, not about the code.
+  const incomplete = code.length > 0 && !valid
 
   /**
    * Only a join that actually opened the room closes the sheet — the room
@@ -265,7 +272,7 @@ function JoinByCode({onJoined}: {onJoined: () => void}) {
     if (!valid || joining) return
     setJoining(true)
     setFailed(false)
-    if (await session.joinRoom(normalized)) {
+    if (await session.joinRoom(code)) {
       onJoined()
       return // Stays disabled through the exit animation.
     }
@@ -277,17 +284,24 @@ function JoinByCode({onJoined}: {onJoined: () => void}) {
     <form className="field" onSubmit={event => void submit(event)}>
       <span className="field__label">Join with a code</span>
       {/* The placeholder is a mask, not a sample code: a realistic-looking one
-          reads as something you are supposed to type in. */}
+          reads as something you are supposed to type in.
+
+          No maxLength: at 14 — the length of a formatted code — the browser
+          truncated any paste carrying a stray space or quote, losing the last
+          character before normalizeCode could strip the junk. The length limit
+          belongs after normalizing, not before it, which is what the slice in
+          onChange does. */}
       <input
-        className="field__input field__input--code"
-        value={formatCode(normalized).slice(0, 14) || value}
-        onChange={event => setValue(event.target.value)}
+        className={`field__input field__input--code ${incomplete ? 'field__input--partial' : ''}`}
+        aria-invalid={incomplete || undefined}
+        title={incomplete ? `${code.length} of ${CODE_SYMBOLS} symbols` : undefined}
+        value={formatCode(code)}
+        onChange={event => setCode(normalizeCode(event.target.value).slice(0, CODE_SYMBOLS))}
         placeholder="XXXX-XXXX-XXXX"
         autoComplete="off"
         autoCapitalize="characters"
         autoCorrect="off"
         spellCheck={false}
-        maxLength={14}
       />
       <button type="submit" className="button" disabled={!valid || joining}>
         {joining ? 'Joining…' : 'Join'}

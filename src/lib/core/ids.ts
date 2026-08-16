@@ -11,7 +11,7 @@
 
 /** Crockford base32 — no I, L, O or U, so codes survive being read aloud. */
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
-const CODE_SYMBOLS = 12 // 12 × 5 bits = 60 bits of entropy
+export const CODE_SYMBOLS = 12 // 12 × 5 bits = 60 bits of entropy
 const GROUP = 4
 
 export function randomCode(symbols = CODE_SYMBOLS): string {
