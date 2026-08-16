@@ -329,6 +329,36 @@ button {
   align-self: flex-start;
 }
 
+/* Only appears when a device is stuck, so it sits below the list rather than
+   competing with it. */
+.popover__action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.popover__action:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.popover__action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /*
  * The scroll container spans the full width, and the 620px column lives inside
  * it. Constraining the scroller itself put its scrollbar on the column's right
@@ -1362,6 +1392,22 @@ button {
 .field__input:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* A code that is started but not finished. A ring on the field says "not yet"
+   without claiming anything is wrong — amber, because a half-typed code is
+   incomplete rather than invalid.
+
+   Declared after `.field__input:focus` on purpose: that rule paints the accent
+   outline at the same specificity, so a focused partial field showed a blue
+   ring around an amber border — two rings disagreeing about the same state. */
+.field__input--partial {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent);
+}
+
+.field__input--partial:focus {
+  outline-color: var(--warn);
 }
 
 .field__hint {

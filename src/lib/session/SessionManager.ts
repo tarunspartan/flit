@@ -208,6 +208,23 @@ export class SessionManager {
     return this.#start(() => this.#rooms.join(input))
   }
 
+  /**
+   * Rebuilds the connection to the current room, keeping the code.
+   *
+   * Only ever called because someone pressed the button. An earlier version of
+   * this ran automatically whenever signaling looked unhealthy, and since
+   * "unhealthy" is also what a page looks like during its first few seconds, it
+   * tore the transport down mid-handshake and stopped devices pairing at all.
+   * Trystero re-announces every 5.3s on its own, so automatic rebuilding is not
+   * only risky but redundant — this exists for the case where the page came
+   * back from being frozen and its sockets never did.
+   */
+  async reconnect(): Promise<boolean> {
+    const room = this.#rooms.current
+    if (!room || this.#busy) return false
+    return this.#start(() => room)
+  }
+
   async #start(makeRoom: () => {code: string}): Promise<boolean> {
     if (this.#busy) return false
     this.#busy = true
