@@ -154,7 +154,6 @@ export class SessionManager {
   #unsubscribe: (() => void)[] = []
   #reviving = false
   #lastReviveAt = 0
-  #signalingWasReady = false
 
   constructor() {
     this.#transfers = new TransferManager(peerId => this.#linkFor(peerId), this.#prefs)
@@ -729,26 +728,11 @@ export class SessionManager {
     if (this.#healthTimer !== null) clearInterval(this.#healthTimer)
     this.#signalingBadSince = null
     this.#signaling = 'ok'
-    // Sampled now, right after joining, so that sockets opening a moment later
-    // reads as the transition it is. After a rebuild they are already open, so
-    // this starts true and nothing fires again.
-    this.#signalingWasReady = this.#transport?.signalingReady() === true
 
     this.#healthTimer = setInterval(() => {
       const now = Date.now()
       if (this.#transport?.signalingReady() === true) this.#signalingBadSince = null
       else this.#signalingBadSince ??= now
-
-      // Trystero publishes only on an already-open socket and drops anything
-      // sent before that, with no queue and no retry. A room opened while the
-      // relays were still connecting — which is every launch from the dock,
-      // where the service worker serves the app faster than a WebSocket
-      // handshake completes — therefore announces into nothing, and the first
-      // scan finds no one. Sockets coming up afterwards is the cue to say it
-      // again. Guarded on having no peers so it cannot disturb a live room.
-      const ready = this.#transport?.signalingReady() === true
-      if (ready && !this.#signalingWasReady && this.#peers.size === 0) void this.#revive()
-      this.#signalingWasReady = ready
 
       const downFor = this.#signalingBadSince === null ? 0 : now - this.#signalingBadSince
       const next: SignalingHealth =
@@ -763,10 +747,11 @@ export class SessionManager {
         this.#changed()
       }
 
-      // Sockets that have stayed shut past the grace period do not come back by
-      // themselves — rebuild them rather than waiting for a wake event that may
-      // never arrive on a desktop that never slept.
-      if (next !== 'ok') void this.#revive()
+      // Only as a last resort, and only once signaling has been gone long
+      // enough that Trystero's own reconnect (3.3s backing off to 60s) has
+      // plainly failed. Rebuilding sooner fights that retry instead of helping,
+      // and a rebuild during pairing destroys the handshake it interrupts.
+      if (next === 'offline') void this.#revive()
     }, 3000)
   }
 
