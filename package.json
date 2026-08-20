@@ -11,8 +11,7 @@
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "turn-server": "node server/index.mjs"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

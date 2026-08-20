@@ -168,10 +168,6 @@ export function friendly(error: unknown): Friendly {
   return MESSAGES.unknown
 }
 
-export function codeOf(error: unknown): ErrorCode {
-  return error instanceof AppError ? error.code : 'unknown'
-}
-
 export function toAppError(error: unknown, fallback: ErrorCode = 'unknown'): AppError {
   if (error instanceof AppError) return error
   const detail = error instanceof Error ? error.message : String(error)

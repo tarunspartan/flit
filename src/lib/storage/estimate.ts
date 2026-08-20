@@ -47,12 +47,29 @@ export async function checkCapacity(bytes: number, appliesToQuota = true): Promi
   return {verdict: 'ok', available, appliesToQuota}
 }
 
+let pending: Promise<boolean> | null = null
+
 /**
- * Asks for persistent storage so the browser does not evict a partially
- * received file under pressure. Silently best-effort.
+ * Asks the browser not to evict this origin's storage, so a partially received
+ * file — and the checkpoint a resume would restart from — survives storage
+ * pressure. Silently best-effort: the answer changes nothing about how we
+ * write, only whether the bytes are safe from eviction.
+ *
+ * Asked at most once per page. Firefox shows a permission prompt for this, and
+ * one per file would be its own kind of broken; Chrome decides silently from
+ * engagement heuristics and would not prompt either way.
  */
-export async function requestPersistentStorage(): Promise<boolean> {
-  if (typeof navigator?.storage?.persist !== 'function') return false
+export function requestPersistentStorage(): Promise<boolean> {
+  pending ??= askToPersist()
+  return pending
+}
+
+async function askToPersist(): Promise<boolean> {
+  // `navigator` is not merely undefined in a worker or in tests — referencing
+  // an undeclared identifier throws, which optional chaining does not catch.
+  if (typeof navigator === 'undefined' || typeof navigator.storage?.persist !== 'function') {
+    return false
+  }
   try {
     if (await navigator.storage.persisted()) return true
     return await navigator.storage.persist()

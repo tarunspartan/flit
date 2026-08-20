@@ -2,11 +2,13 @@ import {useEffect, useRef, useState} from 'react'
 import QRCode from 'qrcode'
 import {LIMITS} from '../../lib/core/config.ts'
 import type {SessionSnapshot, SharedText} from '../../lib/session/SessionManager.ts'
+import type {SharedFileView, TransferView} from '../../lib/transfer/states.ts'
 import {isTerminal} from '../../lib/transfer/states.ts'
 import {asLink} from '../../lib/utils/text.ts'
+import {formatBytes} from '../../lib/utils/format.ts'
 import {session} from '../store.ts'
-import {Icon, Spinner} from './common.tsx'
-import {IncomingFile, SharedFile} from './TransferItem.tsx'
+import {Icon, PathCost, ProgressBar, Spinner} from './common.tsx'
+import {IncomingFile, IncomingRow, SharedFile, SharedRow, type PathLookup} from './TransferItem.tsx'
 
 /**
  * The whole app. A room is already open by the time this renders, so the first
@@ -15,7 +17,15 @@ import {IncomingFile, SharedFile} from './TransferItem.tsx'
 export function RoomScreen({state}: {state: SessionSnapshot}) {
   const fileInput = useRef<HTMLInputElement>(null)
   const incoming = state.incoming.filter(transfer => !isTerminal(transfer.state))
-  const finished = state.incoming.filter(transfer => isTerminal(transfer.state))
+  // Grouped across finished files too: a batch that loses each file as it
+  // completes cannot say "3 of 5 downloaded", which is the whole point of it.
+  const groups = groupByBatch(state.incoming)
+  const running = groups.filter(group => group.items.some(file => !isTerminal(file.state)))
+  const settled = groups.filter(group => group.items.every(file => isTerminal(file.state)))
+  const sharing = groupByBatch(state.shared)
+  // Rebuilt each render on purpose: the path is what changes, and a memo keyed
+  // on the peer list would miss a link flipping from direct to relay.
+  const paths: PathLookup = new Map(state.peers.map(peer => [peer.id, peer.path.kind]))
   const hasContent = state.shared.length > 0 || state.incoming.length > 0
   // Counts both directions, because that is what cancelling all of them does.
   // Offered only past one: with a single transfer its own Cancel is right there,
@@ -88,20 +98,13 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
         </button>
       )}
 
-      {state.shared.length > 0 && (
-        <section className="list">
-          <h2 className="list__title">
-            Sharing
-            <span className="list__count">{state.shared.length}</span>
-          </h2>
-          <ul className="list__items">
-            {state.shared.map(file => (
-              <SharedFile key={file.id} file={file} />
-            ))}
-          </ul>
-        </section>
-      )}
-
+      {/* Incoming first, then what you are sending, then history.
+          A fixed order rather than one that follows activity: sections that
+          reshuffle while you are reaching for a button are worse than a section
+          in a slightly wrong place. Incoming leads because it is the only one
+          waiting on a decision from you — a file you already shared has nothing
+          left to ask. Before this, files someone sent you appeared below your
+          own sharing list, so the newest thing on screen was the lowest. */}
       {incoming.length > 0 && (
         <section className="list">
           <h2 className="list__title">
@@ -109,20 +112,54 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
             <span className="list__count">{incoming.length}</span>
           </h2>
           <ul className="list__items">
-            {incoming.map(transfer => (
-              <IncomingFile key={transfer.id} transfer={transfer} />
-            ))}
+            {running.map(group =>
+              group.items.length > 1 ? (
+                <IncomingBatch key={group.key} files={group.items} paths={paths} />
+              ) : (
+                <IncomingFile
+                  key={group.key}
+                  transfer={group.items[0]!}
+                  kind={paths.get(group.items[0]!.peerId)}
+                />
+              )
+            )}
           </ul>
         </section>
       )}
 
-      {finished.length > 0 && (
+      {state.shared.length > 0 && (
+        <section className="list">
+          <h2 className="list__title">
+            Sharing
+            <span className="list__count">{state.shared.length}</span>
+          </h2>
+          <ul className="list__items">
+            {sharing.map(group =>
+              group.items.length > 1 ? (
+                <SharedBatch key={group.key} files={group.items} paths={paths} />
+              ) : (
+                <SharedFile key={group.key} file={group.items[0]!} paths={paths} />
+              )
+            )}
+          </ul>
+        </section>
+      )}
+
+      {settled.length > 0 && (
         <section className="list">
           <h2 className="list__title">Received</h2>
           <ul className="list__items">
-            {finished.map(transfer => (
-              <IncomingFile key={transfer.id} transfer={transfer} />
-            ))}
+            {settled.map(group =>
+              group.items.length > 1 ? (
+                <IncomingBatch key={group.key} files={group.items} paths={paths} />
+              ) : (
+                <IncomingFile
+                  key={group.key}
+                  transfer={group.items[0]!}
+                  kind={paths.get(group.items[0]!.peerId)}
+                />
+              )
+            )}
           </ul>
         </section>
       )}
@@ -178,6 +215,232 @@ function Pair({state}: {state: SessionSnapshot}) {
       )}
       <Devices state={state} />
     </section>
+  )
+}
+
+/**
+ * Things dropped together, kept together — newest batch first.
+ *
+ * Grouping is the sender's `batchId` rather than arrival time, so a device that
+ * joins an hour later still sees the same batches rather than one clump of
+ * everything it was told about at once. Anything from a build that sends no
+ * batchId simply stands alone.
+ *
+ * Both lists arrive oldest-first and are reversed by *group*, not by item: the
+ * batch you just dropped belongs at the top, but the files inside it belong in
+ * the order they were picked.
+ */
+function groupByBatch<T extends {id: string; batchId: string | null}>(
+  items: T[]
+): {key: string; items: T[]}[] {
+  const groups: {key: string; items: T[]}[] = []
+  const byBatch = new Map<string, {key: string; items: T[]}>()
+
+  for (const item of items) {
+    if (item.batchId === null) {
+      groups.push({key: item.id, items: [item]})
+      continue
+    }
+    const existing = byBatch.get(item.batchId)
+    if (existing) {
+      existing.items.push(item)
+      continue
+    }
+    const group = {key: item.batchId, items: [item]}
+    byBatch.set(item.batchId, group)
+    groups.push(group)
+  }
+  return groups.reverse()
+}
+
+/**
+ * Show / Hide, on the same line as everything else it belongs to.
+ *
+ * The count is on the button rather than in the summary because that is the
+ * question it answers — how much is behind this — and it keeps the summary to
+ * the facts about the drop itself.
+ */
+function BatchToggle({open, count, onToggle}: {open: boolean; count: number; onToggle: () => void}) {
+  return (
+    <button
+      type="button"
+      className={`batch__toggle ${open ? 'is-open' : ''}`}
+      onClick={onToggle}
+      aria-expanded={open}
+    >
+      {open ? 'Hide' : `Show ${count}`}
+      <Icon name="chevron" size={14} />
+    </button>
+  )
+}
+
+/**
+ * How far along a whole batch is, drawn on the card's bottom edge.
+ *
+ * Deliberately not inside the summary row: a bar that appears between the title
+ * and the buttons the moment a transfer starts makes the row taller and drags
+ * the controls out of line with the name they belong to. On the edge it costs
+ * three pixels and never moves anything.
+ */
+function BatchRail({done, total}: {done: number; total: number}) {
+  return (
+    <span className="batch__rail">
+      <ProgressBar value={total === 0 ? 0 : done / total} state={done === total ? 'done' : 'active'} />
+    </span>
+  )
+}
+
+/**
+ * One drop you are sending, folded into a single row.
+ *
+ * Five files dropped at once used to be five cards, each with a line per device
+ * — a screen of scrolling for one action. The summary carries what there is to
+ * know before opening it: how many, how big, how many have landed.
+ */
+function SharedBatch({files, paths}: {files: SharedFileView[]; paths: PathLookup}) {
+  const [open, setOpen] = useState(false)
+  const bytes = files.reduce((total, file) => total + file.size, 0)
+  // Sent means every device that was offered it has it. With no device in the
+  // room there is nothing to be done yet, so nothing counts as done.
+  const done = files.filter(
+    file =>
+      file.transfers.length > 0 &&
+      file.transfers.every(transfer => transfer.state === 'COMPLETED')
+  ).length
+  const started = files.some(file =>
+    file.transfers.some(transfer => transfer.state !== 'WAITING_FOR_ACCEPT')
+  )
+  const idle = files.every(file => file.transfers.length === 0)
+  // A batch goes to every device in the room, and they need not be reachable
+  // the same way. One label is only honest when they all agree; when they do
+  // not, the per-device breakdown on each file is the answer, not an average.
+  const kinds = new Set(
+    files.flatMap(file => file.transfers.map(transfer => paths.get(transfer.peerId)))
+  )
+  const sharedKind = kinds.size === 1 ? [...kinds][0] : undefined
+
+  return (
+    <li className="batch">
+      <div className="batch__head">
+        <span className="batch__icon" aria-hidden="true">
+          <Icon name="upload" size={16} />
+        </span>
+        <div className="batch__ident">
+          <span className="batch__name">{files.length} files</span>
+          <span className="batch__meta">
+            <span className="meta__field">{formatBytes(bytes)}</span>
+            {sharedKind && (
+              <>
+                <span className="dot">·</span>
+                <PathCost kind={sharedKind} />
+              </>
+            )}
+            <span className="dot">·</span>
+            {idle ? (
+              <span className="meta__field">waiting for a device</span>
+            ) : (
+              <span className="batch__done">
+                {done} of {files.length} sent
+              </span>
+            )}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="button button--icon button--tiny"
+          onClick={() => files.forEach(file => session.unshare(file.id))}
+          aria-label={`Stop sharing all ${files.length} files`}
+          title="Stop sharing all"
+        >
+          <Icon name="x" size={15} />
+        </button>
+        <BatchToggle open={open} count={files.length} onToggle={() => setOpen(value => !value)} />
+      </div>
+
+      {started && <BatchRail done={done} total={files.length} />}
+
+      {open && (
+        <ul className="batch__items">
+          {files.map(file => (
+            <SharedRow key={file.id} file={file} />
+          ))}
+        </ul>
+      )}
+    </li>
+  )
+}
+
+/**
+ * One drop arriving, folded into a single row until asked to open.
+ *
+ * Five files arriving as five full cards pushes everything else off the screen
+ * before you have decided anything. The summary carries what the decision needs
+ * — how many, how big, who from — and Download all is the usual answer.
+ */
+function IncomingBatch({files, paths}: {files: TransferView[]; paths: PathLookup}) {
+  const [open, setOpen] = useState(false)
+  const bytes = files.reduce((total, file) => total + file.size, 0)
+  const done = files.filter(file => file.state === 'COMPLETED').length
+  const started = done > 0 || files.some(file => file.state !== 'WAITING_FOR_ACCEPT')
+  // Only the ones still waiting on a decision; already queued or running files
+  // must not be re-accepted.
+  const undecided = files.filter(
+    file => file.state === 'WAITING_FOR_ACCEPT' && file.queuePosition === null
+  )
+  const batchKind = files[0] ? paths.get(files[0].peerId) : undefined
+
+  return (
+    <li className="batch">
+      <div className={`batch__head ${undecided.length > 0 ? 'batch__head--stacked' : ''}`}>
+        <span className="batch__icon batch__icon--in" aria-hidden="true">
+          <Icon name="download" size={16} />
+        </span>
+        <div className="batch__ident">
+          <span className="batch__name">{files.length} files</span>
+          <span className="batch__meta">
+            <span className="meta__field">{formatBytes(bytes)}</span>
+            <span className="dot">·</span>
+            <span className="meta__field">from {files[0]?.peerName}</span>
+            {/* Every file in a batch comes from one device, so one label is the
+                whole truth about what this batch costs. */}
+            {batchKind && (
+              <>
+                <span className="dot">·</span>
+                <PathCost kind={batchKind} />
+              </>
+            )}
+            {started && (
+              <>
+                <span className="dot">·</span>
+                <span className="batch__done">
+                  {done} of {files.length} downloaded
+                </span>
+              </>
+            )}
+          </span>
+        </div>
+        {undecided.length > 0 && (
+          <button
+            type="button"
+            className="button button--primary button--small"
+            onClick={() => undecided.forEach(file => session.accept(file.id))}
+          >
+            <Icon name="download" size={14} /> Download all
+          </button>
+        )}
+        <BatchToggle open={open} count={files.length} onToggle={() => setOpen(value => !value)} />
+      </div>
+
+      {started && <BatchRail done={done} total={files.length} />}
+
+      {open && (
+        <ul className="batch__items">
+          {files.map(file => (
+            <IncomingRow key={file.id} transfer={file} />
+          ))}
+        </ul>
+      )}
+    </li>
   )
 }
 

@@ -53,7 +53,7 @@ the negotiated chunk size, or if `byteLength` disagrees with the bytes actually 
 | `SESSION_END` | both | `user` \| `expired` \| `blocked` \| `full`. |
 | `PATH_NOTE` | both | How this device reads the shared connection. Cosmetic only — see [Agreeing on the path](#agreeing-on-the-path). |
 | `TEXT_SHARE` | both | A link or short note, capped at `maxTextLength`. Untrusted display text, handled like a filename. |
-| `TRANSFER_OFFER` | sender → receiver | File identity and chunking plan. |
+| `TRANSFER_OFFER` | sender → receiver | File identity and chunking plan, plus an optional `batchId` shared by everything dropped together. |
 | `TRANSFER_ACCEPT` | receiver → sender | Go-ahead, **from chunk N**. Sent on consent and again after a resume. |
 | `TRANSFER_REJECT` | receiver → sender | `declined` \| `too-large` \| `no-storage` \| `busy`. |
 | `TRANSFER_PAUSE` | both | User-initiated pause. |

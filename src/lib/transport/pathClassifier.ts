@@ -158,6 +158,22 @@ export function steadyPath(previous: NetworkPath | undefined, fresh: NetworkPath
   return fresh
 }
 
+/**
+ * What this path costs, which is a different question from what it is.
+ *
+ * `direct` and `relay` collapse to one answer on purpose: both spend your
+ * connection to the world, and for deciding whether to accept a 2 GB file on
+ * mobile data the distinction between them changes nothing. Whether a server
+ * sits in the middle is a trust question, and PathBadge is where it is asked.
+ *
+ * Null while the path is unknown — a guess about someone's data plan is worse
+ * than saying nothing.
+ */
+export function bandwidthCost(kind: PathKind): 'local' | 'internet' | null {
+  if (kind === 'unknown') return null
+  return kind === 'local' ? 'local' : 'internet'
+}
+
 /** Applies an agreed kind to a locally-measured path, keeping our own RTT. */
 export function withKind(path: NetworkPath, kind: PathKind): NetworkPath {
   return kind === path.kind ? path : {...path, kind, network: NETWORK_LABEL[kind]}

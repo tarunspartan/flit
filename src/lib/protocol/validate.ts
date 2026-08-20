@@ -106,6 +106,7 @@ function validateBody(m: Rec): boolean {
         int(m.totalChunks, 0, MAX_TOTAL_CHUNKS) &&
         str(m.hashAlgorithm, 64) &&
         (m.relPath === undefined || str(m.relPath, 1024)) &&
+        (m.batchId === undefined || id(m.batchId)) &&
         // The chunk count must actually describe the declared size.
         m.totalChunks === Math.ceil(m.size / m.chunkSize)
       )

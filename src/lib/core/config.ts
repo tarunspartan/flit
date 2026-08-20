@@ -71,6 +71,17 @@ export const MEMORY_STORE_MAX_BYTES = 512 * 1024 * 1024
 export const PICKER_MIN_BYTES = 256 * 1024 * 1024
 
 /**
+ * Above this size, ask the browser to make storage persistent before receiving
+ * into OPFS.
+ *
+ * Not lower, because asking is not free: Firefox shows a permission prompt for
+ * it, and a prompt to protect a transfer that finishes in two seconds is worse
+ * than the eviction it prevents. Below this a transfer is short enough that
+ * being interrupted *and* evicted is not a case worth spending a prompt on.
+ */
+export const PERSIST_MIN_BYTES = 128 * 1024 * 1024
+
+/**
  * Public STUN only. STUN just tells a browser how it looks from outside; it
  * never carries file data, needs no account, and costs nothing to use — so the
  * project stays free of any infrastructure to maintain.

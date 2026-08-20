@@ -38,7 +38,7 @@ const TRANSITIONS: Record<TransferState, readonly TransferState[]> = {
   FAILED: []
 }
 
-export const TERMINAL_STATES: readonly TransferState[] = [
+const TERMINAL_STATES: readonly TransferState[] = [
   'COMPLETED',
   'REJECTED',
   'CANCELLED',
@@ -58,14 +58,38 @@ export function isActive(state: TransferState): boolean {
   return state === 'TRANSFERRING' || state === 'PAUSED' || state === 'RECONNECTING'
 }
 
+/**
+ * True while there is progress worth drawing a bar for.
+ *
+ * `isActive` plus the verification tail: no bytes move during VERIFYING, but
+ * from the user's side it is the same wait, and dropping the bar there would
+ * make a finishing transfer look like it had stalled.
+ */
+export function isMoving(state: TransferState): boolean {
+  return isActive(state) || state === 'VERIFYING'
+}
+
 /** One dropped file, offered to every device that joins the room. */
 export interface SharedFileView {
   id: string
   name: string
   size: number
   addedAt: number
+  /** Shared by everything dropped in one action, so the UI can fold it up. */
+  batchId: string
   /** One entry per device the file has been offered to. */
   transfers: TransferView[]
+}
+
+/**
+ * Accepted, but another download from the same device is still running.
+ *
+ * Still WAITING_FOR_ACCEPT on the wire — the accept is what has been held back
+ * — so a queue position is the only thing that separates "waiting for you" from
+ * "waiting for its turn". Written out in four places before this existed.
+ */
+export function isQueued(view: TransferView): boolean {
+  return view.state === 'WAITING_FOR_ACCEPT' && view.queuePosition !== null
 }
 
 export interface TransferError {
@@ -91,6 +115,8 @@ export interface TransferView {
   speed: number | null
   etaSeconds: number | null
   queuePosition: number | null
+  /** Files dropped together share one id, so the UI can group them. */
+  batchId: string | null
   error: TransferError | null
   verified: boolean
   storageKind: StoreKind | null

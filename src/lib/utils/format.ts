@@ -39,10 +39,3 @@ export function formatDuration(seconds: number | null): string {
 export function formatPercent(fraction: number): string {
   return `${Math.floor(Math.min(1, Math.max(0, fraction)) * 100)}%`
 }
-
-export function formatShortTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour: 'numeric',
-    minute: '2-digit'
-  })
-}
