@@ -460,7 +460,7 @@ export class SessionManager {
   }
 
   #onHello(peer: PeerRecord, msg: Extract<ControlMessage, {t: 'HELLO'}>): void {
-    peer.name = sanitizeDeviceName(msg.deviceName)
+    peer.name = this.#distinctName(sanitizeDeviceName(msg.deviceName), peer.id)
     peer.kind = sanitizeDeviceName(msg.deviceKind)
     peer.deviceId = msg.deviceId ?? null
     // Every device in the room meshes with every other, so a second tab of this
@@ -480,6 +480,36 @@ export class SessionManager {
     // becomes ready to be offered the room's files.
     if (peer.approved) this.#transfers.peerReady(peer.id, peer.name)
     this.#changed()
+  }
+
+  /**
+   * Makes a peer's display name unique within the room.
+   *
+   * Device names are guessed from the user agent, so a room with two MacBooks
+   * gets two peers both called "Mac". Past two devices that stops being cosmetic:
+   * which one is at 40%, which one Disconnect will end, and who sent the note
+   * all become unanswerable. The first keeps the plain name and later ones are
+   * numbered, which reads as exactly what it is.
+   *
+   * Only other peers are considered, never this device's own name — you are not
+   * in your own roster, so there is nothing on screen to confuse yourself with,
+   * and numbering the only other Mac in the room would just look like a bug.
+   *
+   * A name is assigned once, at HELLO, and then left alone. Renumbering the
+   * survivors when a device leaves would rename a peer mid-transfer.
+   */
+  #distinctName(name: string, self: PeerId): string {
+    const taken = new Set<string>()
+    for (const other of this.#peers.values()) {
+      if (other.id === self || other.isSelf) continue
+      if (other.name) taken.add(other.name)
+    }
+    if (!taken.has(name)) return name
+    // Bounded by the room size: there can never be more collisions than peers.
+    for (let n = 2; n <= MAX_PEERS + 1; n++) {
+      if (!taken.has(`${name} ${n}`)) return `${name} ${n}`
+    }
+    return name
   }
 
   /**
@@ -620,6 +650,11 @@ export class SessionManager {
   }
   cancelAll(): void {
     this.#transfers.cancelAll()
+  }
+
+  /** Removes a download from the queue without declining the file. */
+  unqueue(id: string): void {
+    this.#transfers.unqueue(id)
   }
 
   /**

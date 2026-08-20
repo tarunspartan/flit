@@ -55,6 +55,34 @@ keep running.
 | **Privacy** | No account, no upload, no file storage, no telemetry. The pairing code never reaches a server. |
 | **Installable** | A PWA. Once installed on Chromium — Android, ChromeOS, Windows — it registers as a share target, so *Share → flit* opens the app with the file already queued. Not macOS or iOS: neither wires a web app into the system share sheet. |
 
+### What a transfer costs
+
+Every transfer says where its bytes are travelling — **Local network** or **Internet** — next to the
+size and the sender, on both the receiving and the sending device. It is there before you accept,
+which is the moment it matters: a 2 GB file over your own Wi-Fi is free, and the same file over a
+phone's data plan is not.
+
+`direct` and `relay` both read as "Internet". They differ in whether a server is in the middle,
+which is a trust question and is what the connection badge in the device list answers; for deciding
+whether to spend your data allowance the distinction changes nothing. Nothing is shown at all while
+the path is still unknown — a guess about someone's data plan is worse than saying nothing.
+
+On the sending side the label sits on each device's own line, because a laptop on the same Wi-Fi and
+a phone on mobile data are the same file costing two very different things.
+
+### Telling devices apart
+
+Device names are guessed from the user agent, so a room with two MacBooks would show two peers both
+called "Mac". Past two devices that stops being cosmetic — which one is at 40%, which one Disconnect
+will end, and who sent a note all become unanswerable — so a colliding name is numbered on arrival:
+`Mac`, `Mac 2`, `Mac 3`. The number is assigned once and never reshuffled, because renumbering the
+survivors when a device leaves would rename a peer mid-transfer.
+
+Numbering is per screen: each device numbers the peers *it* can see, and never itself, so the same
+laptop can be "Mac 2" on one screen and "Mac" on another. That is fine for the question the label
+actually answers, which is always local. Renaming a device in settings is the fix when you need one
+name everyone agrees on.
+
 ### Deliberately not built
 
 Cloud storage, permanent file hosting, public links, server-side scanning or previews, accounts,
@@ -107,9 +135,33 @@ class — checkpoint state is meaningless apart from the transfer that owns it.
 ### Files belong to the room, not to a device
 
 Dropping a file registers it as *shared*. `TransferManager` then creates one `SendTransfer` per
-device — each with its own consent, queue position, checkpoints and resume state — and re-runs that
-for every device that joins later. One device downloading slowly never blocks another, and each
-device gets one active transfer at a time so it isn't starved by parallel streams.
+device — each with its own consent, checkpoints and resume state — and re-runs that for every
+device that joins later. One device downloading slowly never blocks another.
+
+Every shared file is offered as soon as it is dropped, not one at a time. An offer is metadata, so
+holding the rest back until the first finished meant a device could see only the first file with no
+sign the others existed.
+
+Downloads themselves still run one at a time per device. Accepting several marks the rest
+**Queued**: five downloads sharing one connection all crawl and none of them finishes, whereas
+serially the first file is usable while the rest arrive, and an interruption costs one part-file
+instead of five.
+
+Files dropped in one action share a `batchId` and are shown as one group on **both** devices —
+"5 files · 15 MB" with **Download all** on the receiving side, folded until you expand it, so a big
+drop costs one row rather than five cards in either direction. The group counts up — "3 of 5
+downloaded" — on a hairline along the card's edge, so a transfer starting never changes the height
+of the summary or moves the controls out of line with it. Opening a group lists its files one line
+each; a file shared on its own still gets the full card, with the per-device breakdown and details.
+Grouping comes from the sender, so a device joining an hour later sees the same batches instead of
+one clump of everything at once.
+
+The newest drop is at the top of each list, and files inside a group stay in the order they were
+picked — including the one currently downloading, which does not jump position when it starts.
+
+A queued file offers **Not now** rather than Cancel. Cancelling is terminal, and a queued file has
+not started — leaving the queue puts its Download button back, so you can accept everything, change
+your mind, and take only the two you actually wanted.
 
 ### Receiver storage tiers
 
@@ -121,6 +173,14 @@ Chosen automatically per transfer, best first:
    handed to your downloads. Bounded memory at any file size.
 3. **Memory** — last resort for browsers with neither. Hard-capped at 512 MB; larger transfers are
    declined rather than crashing the tab.
+
+OPFS is evictable: a browser under storage pressure may drop a partial file, taking the durable
+checkpoint with it, so a resume has nothing left to resume from. Receiving a file of 128 MB or more
+into OPFS therefore asks for persistent storage first — once per page, never on load, and never for
+a smaller file, because Firefox shows a permission prompt for it and one guarding a transfer that
+finishes in two seconds costs more than the eviction it prevents. The request is not awaited: the
+browser's answer changes nothing about how the bytes are written, so it can never delay or fail a
+transfer.
 
 ### Integrity: `sha256-chunktree-v1`
 
@@ -215,6 +275,27 @@ the OS, which pauses or drops the transfer. The app reconnects and resumes from 
 when the tab comes back, but it will not claim a transfer continues while the screen is off.
 
 ---
+
+## Colour and motion
+
+One accent token drives the primary action, the progress fill, incoming chips, focus rings and
+links. It is a deep ocean blue at OKLCH hue 245, and it sits 87° clear of the nearest status colour
+(`--ok` at 158°) — green, amber and red are already spoken for by `--ok`, `--warn`/`--relay` and
+`--danger`, so an accent in one of those would make "do this" and "this finished" the same colour.
+
+The primary action is outlined rather than filled — border and label in the accent, soft tint on
+hover. A solid block of accent sat next to a progress bar in the same colour, and the two competed
+for the same glance.
+
+Every foreground clears **WCAG 2.1 AA** against the darkest surface it can land on: 4.5:1 for text,
+3:1 for controls and focus rings under SC 1.4.11. The light values were derived by holding each
+colour's OKLCH hue and chroma and lowering only its lightness, so the palette keeps its hue
+relationships rather than being re-picked by eye. Both themes are checked, 24 pairings each.
+
+`prefers-reduced-motion: reduce` removes movement and keeps colour: the progress bar stops
+animating its width, chevrons stop rotating, buttons keep their hover colour but lose the 1px press
+travel, and the sheet and popover fade in place instead of travelling. Nothing is removed outright —
+an element that simply appeared with no transition would be its own kind of jarring.
 
 ## Security & privacy
 

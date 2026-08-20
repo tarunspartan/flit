@@ -122,9 +122,38 @@ npm run typecheck && npm test && npm run build
 | Swipe the bottom sheet down | Closes on a real pull; a short pull snaps back | ☐ |
 | Scroll inside the bottom sheet | Swiping never steals the scroll unless already at the top | ☐ |
 | Cancel all | Appears past one transfer; stops both directions on both devices | ☐ |
+| Share many files at once | Every file appears on the other device, not just the first | ☐ |
+| Two separate drops | Arrive as two groups, not one; a late-joining device groups them the same way | ☐ |
+| Sender-side grouping | The sending device shows the same two groups, not seven cards | ☐ |
+| Newest first | The drop you just made is at the top of Sharing and Incoming | ☐ |
+| Order inside a group | Files stay in the order picked; the running one does not move to the end | ☐ |
+| Show / Hide alignment | Sits on the summary's line, and stays there once a transfer starts | ☐ |
+| Download all | Starts one and queues the rest — never several at once | ☐ |
+| Batch progress | Counts up "3 of 5 downloaded"; the group moves to Received when all are done | ☐ |
+| Accept several downloads | One runs, the rest show Queued and start in turn | ☐ |
+| Back a queued download out | "Not now" returns it to Download, and it can be taken later | ☐ |
+| Cancel the running download | Stops it; the next queued file starts | ☐ |
+| Receiving wording | The receiving device says "Receiving", not "Sending" | ☐ |
 | Whole-window drag and drop | Overlay appears anywhere on the page | ☐ |
 | Home screen | QR and drop target only — no explanatory copy | ☐ |
 | Transfer details panel | Protocol, connection, network, storage all correct | ☐ |
+| Incoming above Sharing | Files sent to you sit above your own share list, in both themes | ☐ |
+| Four devices in a room | Peer lines read Mac / Mac 2 / Mac 3 — no two devices share a label | ☐ |
+| Four devices, phone width | No horizontal overflow; no state or percentage clipped | ☐ |
+| Multi-device shared card | One line per device, names and states in aligned columns | ☐ |
+| Queued label | Reads "Queued" with no position number | ☐ |
+| Download button | Outlined, not filled; hover fills with the soft tint | ☐ |
+| Path on an offer | "Local network" or "Internet" shows before you accept, not only during | ☐ |
+| Path while sending | Shown per device, so two peers on different networks read differently | ☐ |
+| Path over mobile data | A phone off Wi-Fi reads "Internet" on both devices | ☐ |
+| Path while connecting | No label at all until the path is known — never a guess | ☐ |
+| Meta line on a phone | Size, sender and network all readable; no stray separator dots | ☐ |
+| Contrast, light theme | Meta text, status colours and the accent all pass AA | ☐ |
+| Contrast, dark theme | Same, including the focus ring against adjacent borders | ☐ |
+| Reduced motion | No width animation, no chevron spin, no button press travel | ☐ |
+| Small download (Firefox) | No persistent-storage prompt for a file under 128 MB | ☐ |
+| Large download (Firefox) | Prompts once for a file over 128 MB, and not again that page | ☐ |
+| Refused persistence | Declining the prompt still lets the transfer run to completion | ☐ |
 | Keyboard navigation | All actions reachable | ☐ |
 | Reduced motion | Animations respect the preference | ☐ |
 

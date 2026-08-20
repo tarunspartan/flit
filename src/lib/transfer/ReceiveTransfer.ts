@@ -58,6 +58,10 @@ export class ReceiveTransfer {
   readonly totalChunks: number
 
   state: TransferState = 'WAITING_FOR_ACCEPT'
+  /** Set while this download is accepted but waiting for the one ahead of it. */
+  queuePosition: number | null = null
+  /** Which drop this file arrived in, when the sender said. */
+  readonly batchId: string | null
   error: AppError | null = null
   verified = false
   startedAt: number | null = null
@@ -99,6 +103,7 @@ export class ReceiveTransfer {
     this.totalChunks = offer.totalChunks
     this.mimeType = sanitizeMime(offer.mimeType)
     this.relPath = sanitizeRelativePath(offer.relPath)
+    this.batchId = offer.batchId ?? null
     // Untrusted: normalized, stripped of path components, then de-duplicated.
     this.name = options.reserveName(sanitizeFilename(offer.name))
     this.#identity = {
@@ -532,7 +537,8 @@ export class ReceiveTransfer {
       progress: this.size === 0 ? 1 : this.#receivedBytes / this.size,
       speed: running ? this.#speed.rate() : null,
       etaSeconds: running ? this.#speed.eta(remaining) : null,
-      queuePosition: null,
+      queuePosition: this.queuePosition,
+      batchId: this.batchId,
       error: this.error ? {code: this.error.code, ...friendly(this.error)} : null,
       verified: this.verified,
       storageKind: (this.#store?.kind ?? null) as StoreKind | null,

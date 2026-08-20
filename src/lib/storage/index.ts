@@ -1,5 +1,6 @@
-import {PICKER_MIN_BYTES} from '../core/config.ts'
+import {PERSIST_MIN_BYTES, PICKER_MIN_BYTES} from '../core/config.ts'
 import {AppError} from '../core/errors.ts'
+import {requestPersistentStorage} from './estimate.ts'
 import {FileSystemStore} from './FileSystemStore.ts'
 import {MemoryStore} from './MemoryStore.ts'
 import {OpfsStore, opfsSupported} from './OpfsStore.ts'
@@ -36,6 +37,12 @@ export async function createReceiverStore(
   }
 
   if (opfsSupported()) {
+    // OPFS is evictable. A browser under storage pressure can drop a partial
+    // file, taking the durable checkpoint with it, and a resume then has
+    // nothing to resume from. Deliberately not awaited: whether the browser
+    // agrees changes nothing about how we write, so it must not be able to
+    // delay or fail the transfer.
+    if (request.size >= PERSIST_MIN_BYTES) void requestPersistentStorage()
     try {
       return await OpfsStore.open(request.filename)
     } catch (err) {

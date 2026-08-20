@@ -9,7 +9,7 @@ import {uniqueFilename} from '../utils/filename.ts'
 import type {PeerLink} from './PeerLink.ts'
 import {ReceiveTransfer} from './ReceiveTransfer.ts'
 import {SendTransfer} from './SendTransfer.ts'
-import {isTerminal, type SharedFileView, type TransferView} from './states.ts'
+import {isActive, isTerminal, type SharedFileView, type TransferView} from './states.ts'
 
 const STALL_TICK_MS = 5000
 
@@ -23,6 +23,8 @@ interface SharedFile {
   id: string
   file: File
   relPath: string | undefined
+  /** Shared by everything dropped in the same action. */
+  batchId: string
   addedAt: number
 }
 
@@ -48,6 +50,16 @@ export class TransferManager {
   #offered = new Map<string, Set<string>>()
   #peers = new Map<string, string>()
   #usedNames = new Set<string>()
+  /** Downloads the user has approved that are waiting their turn. */
+  #queuedAccepts = new Set<string>()
+  /**
+   * Who holds the download slot per device, claimed synchronously.
+   *
+   * accept() is async — it opens storage before reaching TRANSFERRING — so a
+   * loop that accepts five files in one tick would find the slot idle five
+   * times and start all five. The claim closes that gap.
+   */
+  #claimed = new Map<string, string>()
   #nextSeq = 1
   #watchdog: ReturnType<typeof setInterval> | null = null
 
@@ -75,6 +87,10 @@ export class TransferManager {
       return
     }
 
+    // One id for this drop, so the far side can show "5 files" as a batch
+    // instead of five unrelated cards — and so a device joining later groups
+    // them the same way rather than by when it happened to hear about them.
+    const batchId = randomId(8)
     let added = 0
     for (const file of files) {
       if (file.size > LIMITS.maxFileSize) {
@@ -89,6 +105,7 @@ export class TransferManager {
         id: randomId(8),
         file,
         relPath: relativePathOf(file),
+        batchId,
         addedAt: Date.now()
       })
       added++
@@ -126,6 +143,7 @@ export class TransferManager {
         peerName: this.#peers.get(peerId) ?? 'Device',
         file: entry.file,
         ...(entry.relPath ? {relPath: entry.relPath} : {}),
+        batchId: entry.batchId,
         link: this.#linkFor(peerId),
         onChange: () => this.#changed()
       })
@@ -137,18 +155,33 @@ export class TransferManager {
   }
 
   /** One active transfer per device, so each gets the full pipe in turn. */
+  /**
+   * Offers every shared file to a device, rather than one at a time.
+   *
+   * An offer is metadata, not bytes. Holding the rest back until the first
+   * transfer finished meant a device could see only the first of the files
+   * shared with it, with nothing on screen to say the others existed — and if
+   * that first file was never accepted, the rest never appeared at all.
+   *
+   * Bytes are still driven by what the receiver accepts; the sender no longer
+   * decides for it which file it is allowed to know about.
+   */
   #pumpQueue(peerId: string): void {
     const queue = [...this.#sends.values()].filter(transfer => transfer.peerId === peerId)
-    const busy = queue.some(transfer => transfer.state !== 'QUEUED' && !isTerminal(transfer.state))
+    void this.#offerQueued(queue)
+  }
 
-    let position = 0
+  async #offerQueued(queue: SendTransfer[]): Promise<void> {
     for (const transfer of queue) {
-      if (transfer.state === 'QUEUED') transfer.queuePosition = ++position
+      // start() ignores anything already past QUEUED, so overlapping calls from
+      // the several places that pump the queue cannot double-send an offer.
+      if (transfer.state !== 'QUEUED') continue
+      // Awaited one at a time rather than fired together: a large drop would
+      // otherwise put hundreds of offers on the wire at once and trip the
+      // receiver's control-message rate limit, and a dropped offer is a file
+      // the other device never hears about.
+      await transfer.start()
     }
-    if (busy) return
-
-    const next = queue.find(transfer => transfer.state === 'QUEUED')
-    if (next) void next.start()
   }
 
   // --------------------------------------------------------------- peers
@@ -240,7 +273,11 @@ export class TransferManager {
       peerId,
       peerName: this.#peers.get(peerId) ?? 'Device',
       link: this.#linkFor(peerId),
-      onChange: () => this.#changed(),
+      onChange: () => {
+        // The running download finishing is what releases the next one.
+        this.#pumpDownloads(peerId)
+        this.#changed()
+      },
       storagePrefs: this.#prefs,
       reserveName: name => {
         const unique = uniqueFilename(name, this.#usedNames)
@@ -257,8 +294,91 @@ export class TransferManager {
 
   // ------------------------------------------------------------- user actions
 
+  /**
+   * Starts a download, or puts it in line behind the one already running.
+   *
+   * One at a time per device, because five downloads sharing one connection all
+   * crawl and none of them finishes: serially, the first file is usable while
+   * the rest are still arriving, and an interruption costs one part-file rather
+   * than five.
+   */
   accept(id: string): void {
-    void this.#findReceive(id)?.accept()
+    const transfer = this.#findReceive(id)
+    if (!transfer || transfer.state !== 'WAITING_FOR_ACCEPT') return
+
+    if (this.#downloading(transfer.peerId)) {
+      this.#queuedAccepts.add(transfer.id)
+      this.#pumpDownloads(transfer.peerId)
+      return
+    }
+    this.#claimed.set(transfer.peerId, transfer.id)
+    void transfer.accept()
+  }
+
+  /**
+   * Takes a download back out of the queue, leaving the offer intact.
+   *
+   * Deliberately not a cancel: cancelling is terminal, so a queued file that
+   * was cancelled could never be downloaded afterwards. Since a queued transfer
+   * never left WAITING_FOR_ACCEPT — only the accept was held back — dropping it
+   * from the queue puts the Download button back exactly as it was. Accept five,
+   * change your mind, then take just the two you wanted.
+   */
+  unqueue(id: string): void {
+    const transfer = this.#findReceive(id)
+    if (!transfer || !this.#queuedAccepts.has(transfer.id)) return
+    this.#queuedAccepts.delete(transfer.id)
+    transfer.queuePosition = null
+    this.#pumpDownloads(transfer.peerId)
+    this.#changed()
+  }
+
+  /** True while a download from this device is occupying the slot. */
+  #downloading(peerId: string): boolean {
+    const claimed = this.#claimed.get(peerId)
+    if (claimed !== undefined) {
+      const holder = this.#findReceive(claimed)
+      if (holder && !isTerminal(holder.state)) return true
+      this.#claimed.delete(peerId)
+    }
+
+    for (const transfer of this.#receives.values()) {
+      if (transfer.peerId !== peerId) continue
+      if (isActive(transfer.state) || transfer.state === 'VERIFYING') return true
+    }
+    return false
+  }
+
+  /**
+   * Numbers the waiting downloads and lets the next one go when the slot frees.
+   * Called on every receive-side change, so finishing, failing or cancelling the
+   * running transfer all release the queue.
+   */
+  #pumpDownloads(peerId: string): void {
+    const waiting = [...this.#receives.values()].filter(
+      transfer => transfer.peerId === peerId && this.#queuedAccepts.has(transfer.id)
+    )
+
+    // Anything that left WAITING_FOR_ACCEPT — cancelled, or already started —
+    // is no longer queued.
+    for (const transfer of waiting) {
+      if (transfer.state !== 'WAITING_FOR_ACCEPT') {
+        this.#queuedAccepts.delete(transfer.id)
+        transfer.queuePosition = null
+      }
+    }
+
+    const queue = waiting.filter(transfer => this.#queuedAccepts.has(transfer.id))
+    let position = 0
+    for (const transfer of queue) transfer.queuePosition = ++position
+
+    if (this.#downloading(peerId)) return
+    const next = queue[0]
+    if (!next) return
+    this.#queuedAccepts.delete(next.id)
+    next.queuePosition = null
+    this.#claimed.set(peerId, next.id)
+    void next.accept()
   }
 
   reject(id: string): void {
@@ -327,17 +447,23 @@ export class TransferManager {
       name: entry.file.name,
       size: entry.file.size,
       addedAt: entry.addedAt,
+      batchId: entry.batchId,
       transfers: [...this.#sends.values()]
         .filter(transfer => transfer.sharedId === entry.id)
         .map(transfer => transfer.view())
     }))
   }
 
-  /** Files other devices are sending to this one. */
+  /**
+   * Files other devices are sending to this one, in the order they were
+   * offered — Map iteration is insertion order, which is arrival order.
+   *
+   * Deliberately not sorted by startedAt: an unstarted transfer reads as 0
+   * there, so the moment one file in a batch was accepted it sorted below the
+   * four that had not started, and a batch reordered itself as you used it.
+   */
   incoming(): TransferView[] {
-    return [...this.#receives.values()]
-      .map(transfer => transfer.view())
-      .sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))
+    return [...this.#receives.values()].map(transfer => transfer.view())
   }
 
   hasActiveTransfers(): boolean {

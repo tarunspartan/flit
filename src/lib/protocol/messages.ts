@@ -71,6 +71,12 @@ export interface TransferOffer extends Base<'TRANSFER_OFFER'> {
   hashAlgorithm: string
   /** Relative path for folder transfers; always sanitized on receipt. */
   relPath?: string
+  /**
+   * Identifies the files dropped together in one action, so the far side can
+   * present them as one batch rather than a wall of separate cards. Optional:
+   * an older build sends none and every file simply stands alone.
+   */
+  batchId?: string
 }
 
 /**

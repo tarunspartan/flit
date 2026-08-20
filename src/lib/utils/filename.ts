@@ -36,7 +36,7 @@ export function sanitizeFilename(input: unknown, fallback = 'file'): string {
 }
 
 /** Truncates on byte length while keeping the extension intact. */
-export function truncateFilename(name: string, maxBytes = MAX_LENGTH): string {
+function truncateFilename(name: string, maxBytes = MAX_LENGTH): string {
   const encoder = new TextEncoder()
   if (encoder.encode(name).byteLength <= maxBytes) return name
 

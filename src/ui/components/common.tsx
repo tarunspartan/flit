@@ -1,5 +1,6 @@
 import type {ReactNode} from 'react'
 import type {PathKind} from '../../lib/transport/Transport.ts'
+import {bandwidthCost} from '../../lib/transport/pathClassifier.ts'
 
 export function Icon({name, size = 20}: {name: IconName; size?: number}) {
   return (
@@ -39,6 +40,8 @@ export type IconName =
   | 'phone'
   | 'save'
   | 'alert'
+  | 'wifi'
+  | 'globe'
 
 const PATHS: Record<IconName, ReactNode> = {
   upload: (
@@ -136,6 +139,20 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12 10v4" />
       <path d="M12 17h.01" />
     </>
+  ),
+  wifi: (
+    <>
+      <path d="M4.5 11.5a11 11 0 0 1 15 0" />
+      <path d="M8 15a6.5 6.5 0 0 1 8 0" />
+      <path d="M12 18.5h.01" />
+    </>
+  ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18" />
+    </>
   )
 }
 
@@ -185,6 +202,38 @@ export function PathBadge({
       <span className="badge__dot" aria-hidden="true" />
       {PATH_LABEL[kind]}
       {!compact && <span className="badge__network">{network}</span>}
+    </span>
+  )
+}
+
+/**
+ * Where these bytes are going, in the one word that decides whether they cost
+ * anything: your own network, or your connection to the world.
+ *
+ * A separate element from PathBadge, which answers a different question — that
+ * one is the trust signal ("is a server in the middle"), this one is the
+ * bandwidth signal. They agree because both read the same `kind`, but they are
+ * shown in different places and one is not a smaller version of the other.
+ *
+ * Renders nothing until the path is actually known: "Connecting…" in the middle
+ * of a size and a sender name is noise, and a guess about someone's data plan
+ * is worse than saying nothing.
+ */
+export function PathCost({kind}: {kind: PathKind}) {
+  const cost = bandwidthCost(kind)
+  if (cost === null) return null
+  const local = cost === 'local'
+  return (
+    <span
+      className="pathcost"
+      title={
+        local
+          ? 'Travelling over your own network — this does not use your internet data'
+          : 'Travelling over the internet — this uses your connection'
+      }
+    >
+      <Icon name={local ? 'wifi' : 'globe'} size={13} />
+      {local ? 'Local network' : 'Internet'}
     </span>
   )
 }

@@ -15,6 +15,7 @@ export interface SendTransferOptions {
   peerName: string
   file: File
   relPath?: string
+  batchId?: string
   link: PeerLink
   onChange: () => void
 }
@@ -34,6 +35,7 @@ export class SendTransfer {
   peerName: string
   readonly file: File
   readonly relPath: string | undefined
+  readonly batchId: string | undefined
   readonly chunkSize = CHUNK_SIZE
   readonly totalChunks: number
 
@@ -74,6 +76,7 @@ export class SendTransfer {
     this.peerName = options.peerName
     this.file = options.file
     this.relPath = options.relPath
+    this.batchId = options.batchId
     this.#link = options.link
     this.#onChange = options.onChange
     this.totalChunks = Math.ceil(options.file.size / this.chunkSize)
@@ -106,7 +109,8 @@ export class SendTransfer {
           chunkSize: this.chunkSize,
           totalChunks: this.totalChunks,
           hashAlgorithm: HASH_ALGORITHM,
-          ...(this.relPath ? {relPath: this.relPath} : {})
+          ...(this.relPath ? {relPath: this.relPath} : {}),
+          ...(this.batchId ? {batchId: this.batchId} : {})
         })
       )
     } catch (err) {
@@ -424,6 +428,7 @@ export class SendTransfer {
       speed: running ? this.#speed.rate() : null,
       etaSeconds: running ? this.#speed.eta(remaining) : null,
       queuePosition: this.queuePosition,
+      batchId: this.batchId ?? null,
       error: this.error ? {code: this.error.code, ...friendly(this.error)} : null,
       verified: this.verified,
       storageKind: null,

@@ -1,4 +1,4 @@
-import {afterEach, describe, expect, it} from 'vitest'
+import {afterEach, describe, expect, it, vi} from 'vitest'
 import {formatCode, isValidCode, normalizeCode, randomCode, deriveRoomTopic} from '../src/lib/core/ids.ts'
 import {ChunkTreeHasher} from '../src/lib/integrity/hash.ts'
 import {decodeChunk, encodeChunk, FRAME_HEADER_BYTES} from '../src/lib/protocol/frame.ts'
@@ -8,7 +8,7 @@ import {canTransition, isTerminal} from '../src/lib/transfer/states.ts'
 import {FlowController} from '../src/lib/transfer/FlowController.ts'
 import {sanitizeFilename, sanitizeRelativePath, uniqueFilename} from '../src/lib/utils/filename.ts'
 import {SpeedMeter} from '../src/lib/utils/speed.ts'
-import {agreeKind, classifyPath, isPrivate, sameSubnet, steadyPath} from '../src/lib/transport/pathClassifier.ts'
+import {agreeKind, bandwidthCost, classifyPath, isPrivate, sameSubnet, steadyPath} from '../src/lib/transport/pathClassifier.ts'
 import {formatBytes, formatDuration} from '../src/lib/utils/format.ts'
 import {takeSharedFiles} from '../src/lib/utils/shareTarget.ts'
 
@@ -598,5 +598,93 @@ describe('formatting', () => {
     expect(formatDuration(0.4)).toBe('less than a second')
     expect(formatDuration(90)).toBe('1 min 30 sec')
     expect(formatDuration(7200)).toBe('2 hr')
+  })
+})
+
+describe('persistent storage', () => {
+  const real = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+
+  const withNavigator = (value: unknown) => {
+    Object.defineProperty(globalThis, 'navigator', {value, configurable: true, writable: true})
+  }
+
+  afterEach(() => {
+    if (real) Object.defineProperty(globalThis, 'navigator', real)
+    vi.resetModules()
+  })
+
+  /** A fresh copy, because the module memoizes the answer for the whole page. */
+  const freshModule = async () => {
+    vi.resetModules()
+    return import('../src/lib/storage/estimate.ts')
+  }
+
+  it('reports false where the API does not exist, without throwing', async () => {
+    withNavigator({})
+    const {requestPersistentStorage} = await freshModule()
+    await expect(requestPersistentStorage()).resolves.toBe(false)
+  })
+
+  it('survives navigator being absent entirely, as in a worker', async () => {
+    // Referencing an undeclared global throws rather than yielding undefined,
+    // so this is not the same case as the one above.
+    // @ts-expect-error deleting a global for the duration of the test
+    delete globalThis.navigator
+    const {requestPersistentStorage} = await freshModule()
+    await expect(requestPersistentStorage()).resolves.toBe(false)
+  })
+
+  it('asks the browser at most once per page', async () => {
+    const persist = vi.fn().mockResolvedValue(true)
+    withNavigator({storage: {persist, persisted: vi.fn().mockResolvedValue(false)}})
+    const {requestPersistentStorage} = await freshModule()
+
+    const answers = await Promise.all([
+      requestPersistentStorage(),
+      requestPersistentStorage(),
+      requestPersistentStorage()
+    ])
+    expect(answers).toEqual([true, true, true])
+    expect(persist).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not ask again once the origin is already persisted', async () => {
+    const persist = vi.fn()
+    withNavigator({storage: {persist, persisted: vi.fn().mockResolvedValue(true)}})
+    const {requestPersistentStorage} = await freshModule()
+
+    await expect(requestPersistentStorage()).resolves.toBe(true)
+    expect(persist).not.toHaveBeenCalled()
+  })
+
+  it('treats a refusal as a refusal rather than an error', async () => {
+    withNavigator({
+      storage: {persist: vi.fn().mockRejectedValue(new Error('denied')), persisted: vi.fn().mockResolvedValue(false)}
+    })
+    const {requestPersistentStorage} = await freshModule()
+    await expect(requestPersistentStorage()).resolves.toBe(false)
+  })
+})
+
+describe('bandwidth cost of a path', () => {
+  it('calls only a proven local link free', () => {
+    expect(bandwidthCost('local')).toBe('local')
+  })
+
+  it('treats direct as internet — direct never means nearby', () => {
+    // 'direct' is what the classifier reports when locality could not be shown,
+    // not a claim that the peer is remote *or* local. It can be a peer on the
+    // other side of the world, so it must not read as free.
+    expect(bandwidthCost('direct')).toBe('internet')
+  })
+
+  it('treats relay as internet, not as its own category', () => {
+    // Relayed bytes cost the same connection, and more of it. Whether a server
+    // is in the middle is a trust question, answered elsewhere.
+    expect(bandwidthCost('relay')).toBe('internet')
+  })
+
+  it('says nothing at all while the path is unknown', () => {
+    expect(bandwidthCost('unknown')).toBeNull()
   })
 })

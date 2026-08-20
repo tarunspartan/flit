@@ -1,4 +1,21 @@
 /* ------------------------------------------------------------------ tokens */
+
+/*
+ * One accent, used for the primary action, progress fill, incoming chips,
+ * focus rings and links. A deep ocean blue at OKLCH hue 245 — 19 degrees off
+ * the bright #2f6bff it replaces and much darker, so it reads as considered
+ * rather than neon. It stays 87 degrees clear of the nearest status colour
+ * (--ok at 158), which is what keeps "do this" from looking like "this
+ * finished"; green, amber and red are all spoken for by --ok, --warn/--relay
+ * and --danger, so the accent cannot live in any of them.
+ *
+ * Every foreground here clears WCAG 2.1 AA against the darkest surface it can
+ * land on (4.5:1 for text, 3:1 for controls and focus rings under SC 1.4.11).
+ * The light values were derived by holding each colour's OKLCH hue and chroma
+ * and lowering only its lightness, so the palette keeps its hue relationships
+ * instead of being re-picked by eye — the previous greens, ambers and greys
+ * sat between 2.95:1 and 4.46:1 and failed.
+ */
 :root {
   --bg: #f6f7f9;
   --surface: #ffffff;
@@ -7,17 +24,16 @@
   --border-strong: #cdd3db;
   --text: #10131a;
   --text-soft: #5b6472;
-  --text-faint: #8a93a1;
-  --accent: #2f6bff;
-  --accent-soft: #e8efff;
-  --accent-text: #ffffff;
-  --ok: #12915b;
+  --text-faint: #67707d;
+  --accent: #015d94;
+  --accent-soft: #e4f2fe;
+  --ok: #01804e;
   --ok-soft: #e3f5ec;
-  --warn: #b7791f;
+  --warn: #9b6305;
   --warn-soft: #fdf3e0;
-  --danger: #d1483c;
+  --danger: #c73f34;
   --danger-soft: #fdecea;
-  --relay: #c98a12;
+  --relay: #95660c;
   --shadow: 0 1px 2px rgb(16 19 26 / 6%), 0 8px 24px -12px rgb(16 19 26 / 18%);
   --radius: 14px;
   --radius-sm: 9px;
@@ -36,9 +52,8 @@
     --text: #eef1f5;
     --text-soft: #a5aeba;
     --text-faint: #78818e;
-    --accent: #5b8cff;
-    --accent-soft: #172341;
-    --accent-text: #06080c;
+    --accent: #2ba8ff;
+    --accent-soft: #00253f;
     --ok: #3ecf8e;
     --ok-soft: #10281f;
     --warn: #e0a63f;
@@ -60,9 +75,8 @@
   --text: #eef1f5;
   --text-soft: #a5aeba;
   --text-faint: #78818e;
-  --accent: #5b8cff;
-  --accent-soft: #172341;
-  --accent-text: #06080c;
+  --accent: #2ba8ff;
+  --accent-soft: #00253f;
   --ok: #3ecf8e;
   --ok-soft: #10281f;
   --warn: #e0a63f;
@@ -362,6 +376,247 @@ button {
   min-height: 42px;
 }
 
+/* One drop, summarised.
+   Folded by default so five files cost one row, not five cards, before anything
+   has been decided. Both directions share the layout: the difference between
+   sending and receiving is an icon and one verb, not a second design. */
+.batch {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* Strictly one line. Everything is `flex: none` except the identity, so a long
+   summary truncates instead of pushing the controls out of line with it. */
+.batch__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.batch__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-soft);
+  flex: none;
+}
+
+.batch__icon--in {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.batch__ident {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.batch__name {
+  font-weight: 570;
+  font-size: 14.5px;
+}
+
+.batch__meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch__done {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Centred on its row, unlike .details-toggle, which sits under the card it
+   belongs to and is left-aligned there. Separate class rather than a shared
+   one: the two look alike but sit in opposite kinds of box. */
+.batch__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.batch__toggle .icon {
+  transition: transform 0.15s;
+}
+
+.batch__toggle.is-open .icon {
+  transform: rotate(180deg);
+}
+
+/* Progress on the card's edge rather than inside the row, so a transfer
+   starting never changes the height of the summary above it. */
+.batch__rail {
+  display: block;
+}
+
+.batch__rail .progress,
+.batch__rail .progress__fill {
+  height: 3px;
+  border-radius: 0;
+}
+
+.batch__items {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Where the bytes are going, shown next to the size and the sender.
+ *
+ * The icon and the word carry it, not a colour. Using the internet is not an
+ * error state, so painting it amber would cry wolf; and a distinction made in
+ * hue alone fails SC 1.4.1 for anyone who cannot see the difference. It
+ * inherits the meta line's colour deliberately — this is one more fact about
+ * the transfer, sitting with the others. */
+.pathcost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* One fact in a meta line. An element rather than a bare text node so the
+   flex gap can separate it from its neighbour: with the dots hidden on narrow
+   screens, two adjacent text runs collapse into a single anonymous flex item
+   and render as "6.00 MBfrom Mac". */
+.meta__field {
+  white-space: nowrap;
+}
+
+.pathcost .icon {
+  opacity: 0.8;
+}
+
+/* ---------------------------------------------------------------- file rows */
+
+/* A file inside an opened batch. Hairline-separated rather than boxed — the
+   batch card is already the box, and a card inside a card is the footprint
+   folding was meant to remove. */
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+}
+
+.row:first-child {
+  border-top: 0;
+}
+
+.row__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row__size {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fixed width, so a column of rows lines up instead of every bar starting
+   wherever its filename happened to end. */
+.row__bar {
+  flex: none;
+  width: 60px;
+}
+
+.row__state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: none;
+  min-width: 58px;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.row__state--completed {
+  color: var(--ok);
+}
+
+.row__state--failed,
+.row__state--reconnecting {
+  color: var(--danger);
+}
+
+.row__state--paused {
+  color: var(--warn);
+}
+
+.row__acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+/* Holds the actions column open for states with nothing to act on, so the
+   labels above and below it stay in one column. */
+.row__pad {
+  flex: none;
+  width: 26px;
+}
+
+/* Full width on its own line: storage advice is a sentence, and squeezing it
+   into the row would truncate the part that says what to do. */
+.row__warning {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+/* Accepted but waiting its turn: the same weight as the other states, in the
+   quiet colour, because nothing is wrong — it just has not started. */
+.incoming__state--queued {
+  color: var(--text-faint);
+}
+
+.incoming__queued {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
 .note {
   display: flex;
   align-items: flex-start;
@@ -599,15 +854,19 @@ button {
   cursor: not-allowed;
 }
 
+/*
+ * Outlined rather than filled. The accent already says "this is the action",
+ * and a solid block of it sat next to a progress bar in the same colour made
+ * the two compete for the same glance. The border and label carry it instead;
+ * hover fills with the soft tint so the control still has somewhere to go.
+ */
 .button--primary {
-  background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent-text);
+  color: var(--accent);
 }
 
 .button--primary:hover:not(:disabled) {
-  filter: brightness(1.08);
-  background: var(--accent);
+  background: var(--accent-soft);
 }
 
 .button--ghost {
@@ -640,6 +899,13 @@ button {
   color: var(--text);
 }
 
+/* For the controls inside a file row, where a full icon button would set the
+   row height on its own. */
+.button--tiny {
+  padding: 4px;
+  border-radius: 7px;
+}
+
 /*
  * Touch targets. Apple asks for 44px, Material for 48dp; the visual size of
  * small controls stays as designed and the tappable area is grown around it.
@@ -657,6 +923,20 @@ button {
   .button--icon {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  /* Below the 44px guideline, and deliberately: these are the secondary
+     controls of one file inside a batch, and three of them at full size wrap
+     the row they are meant to fit on. Every one of them has a full-size
+     equivalent — the batch's own buttons, or the card a single file gets. */
+  .button--tiny {
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  .batch__toggle {
+    min-height: 40px;
+    padding-inline: 6px;
   }
 
   .device__act,
@@ -1016,51 +1296,26 @@ button {
   gap: 6px;
 }
 
-.peerline {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+/* The same row, indented under the file it belongs to. A device name is short
+   and fixed width, so here the bar is the flexible element rather than the
+   label — the opposite of a file row, and the only thing that differs. */
+.row--peer {
+  padding: 0;
+  border-top: 0;
   font-size: 12.5px;
 }
 
-.peerline__name {
+.row--peer .row__name {
+  flex: none;
   min-width: 84px;
   max-width: 34%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text-soft);
   font-weight: 550;
 }
 
-.peerline__progress {
+.row--peer .row__bar {
   flex: 1;
-}
-
-.peerline__spacer {
-  flex: 1;
-}
-
-.peerline__state {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.peerline__state--completed {
-  color: var(--ok);
-}
-
-.peerline__state--failed,
-.peerline__state--reconnecting {
-  color: var(--danger);
-}
-
-.peerline__state--paused {
-  color: var(--warn);
+  width: auto;
 }
 
 /* ------------------------------------------------------------- incoming */
@@ -1651,6 +1906,14 @@ button {
   }
 }
 
+/*
+ * Reduced motion (W3C UAAG / CSS Media Queries 5).
+ *
+ * Movement is removed; colour and opacity changes stay, because they carry
+ * state without travelling across the screen and are not what the setting is
+ * asking about. Nothing here is removed outright — an element that simply
+ * appeared with no transition at all would be a different kind of jarring.
+ */
 @media (prefers-reduced-motion: reduce) {
   .spinner {
     animation-duration: 2s;
@@ -1660,7 +1923,23 @@ button {
     transition: none;
   }
 
-  /* Keep the fade so the sheet still reads as appearing, but drop the travel. */
+  /* Rotating chevrons: the open/closed state is already carried by the layout
+     underneath them, so the spin has nothing left to say. */
+  .details-toggle .icon,
+  .batch__toggle .icon {
+    transition: none;
+  }
+
+  /* Keeps the hover colour, drops the 1px press travel. */
+  .button {
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .button:active:not(:disabled) {
+    transform: none;
+  }
+
+  /* Keep the fade so these still read as appearing, but drop the travel. */
   .sheet__panel,
   .sheet.is-closing .sheet__panel,
   .popover {
@@ -1671,6 +1950,64 @@ button {
 
 /* ---------------------------------------------------------- small screens */
 @media (max-width: 560px) {
+  .row__size {
+    display: none;
+  }
+
+  /* The summary carries four facts on a phone — size, who from, which network,
+     how far along — and they cannot share a line with Download all and a
+     toggle. Left in one row the identity collapsed to 78px (min-width: 0 lets
+     it lose to the buttons) and the network label overflowed it.
+     The controls drop to a row of their own, which is what they are, and the
+     summary gets the full width and wraps within it. */
+  .batch__head {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  /* Overrides the desktop min-width: 0, which let the summary lose the row to
+     the buttons and collapse to 78px. */
+  .batch__ident {
+    min-width: 150px;
+  }
+
+  .batch__meta,
+  .incoming__meta {
+    flex-wrap: wrap;
+    white-space: normal;
+    overflow: visible;
+    row-gap: 1px;
+    column-gap: 10px;
+  }
+
+  /* A "·" between two fields cannot survive the line break between them: it
+     ends up leading the next line, where it reads as a bullet rather than as
+     punctuation. Spacing does the separating once the line wraps. */
+  .batch__meta .dot,
+  .incoming__meta .dot {
+    display: none;
+  }
+
+  /* Only when there is a real action to make room for. A toggle on its own
+     fits beside the summary, and giving it a row of its own would be 44px of
+     nothing. */
+  .batch__head--stacked .batch__ident {
+    flex: 1 0 calc(100% - 38px);
+  }
+
+  /* Indented to the text above rather than to the icon. */
+  .batch__head--stacked > .button {
+    margin-left: 38px;
+  }
+
+  .batch__head--stacked .batch__toggle {
+    margin-left: auto;
+  }
+
+  .row__bar {
+    width: 48px;
+  }
+
   .main__column {
     /* Clears the floating controls, ~44px tall at 14px from the top. */
     padding: 66px 13px 34px;
@@ -1693,21 +2030,15 @@ button {
     padding-left: 0;
   }
 
-  /* Name on its own line so the bar and percentage always fit. */
-  .peerline {
-    flex-wrap: wrap;
+  /* Device name on its own line so the bar and percentage always fit. */
+  .row--peer {
     row-gap: 4px;
   }
 
-  .peerline__name {
+  .row--peer .row__name {
     min-width: 0;
     max-width: none;
     flex: 1 0 100%;
-  }
-
-  .peerline__progress {
-    flex: 1 1 auto;
-    min-width: 0;
   }
 
   /* Primary action gets a full-width thumb target. */
