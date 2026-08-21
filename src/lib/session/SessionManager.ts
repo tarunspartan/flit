@@ -619,14 +619,39 @@ export class SessionManager {
     this.#changed()
   }
 
-  async endSession(): Promise<void> {
+  /**
+   * Ends this session and opens a fresh one, as a single action.
+   *
+   * Disconnecting used to land on a dead-end screen whose only control was
+   * "Start over" — a full stop placed directly in front of the one thing
+   * everybody did next. Everything the old button did still happens: peers are
+   * told the session is over, and the old code stops working. The difference is
+   * that a new code is ready without a second click.
+   *
+   * The disconnected screen is still reached by the endings nobody chose — the
+   * other device ending it, the room expiring, a connection that failed — so it
+   * is a report of something that happened rather than a step in a flow.
+   */
+  async restart(): Promise<boolean> {
+    await this.#farewell()
+    // openRoom tears down the transport, resets transfers, clears the peers and
+    // re-arms expiry, so there is nothing for #end to do first.
+    return this.openRoom()
+  }
+
+  /**
+   * Tells every admitted peer that this session is over.
+   *
+   * Without it they see a connection that merely stopped, and sit in
+   * "Reconnecting…" waiting for a device that is not coming back.
+   */
+  async #farewell(): Promise<void> {
     for (const peer of this.#peers.values()) {
       if (!peer.approved) continue
       await this.#transport
         ?.sendControl(peer.id, message({t: 'SESSION_END', reason: 'user'}))
         .catch(() => {})
     }
-    this.#end(null)
   }
 
   /** Shares files with the room. Devices may join afterwards and still get them. */

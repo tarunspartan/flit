@@ -329,12 +329,9 @@ function SharedBatch({files, paths}: {files: SharedFileView[]; paths: PathLookup
           <span className="batch__name">{files.length} files</span>
           <span className="batch__meta">
             <span className="meta__field">{formatBytes(bytes)}</span>
-            {sharedKind && (
-              <>
-                <span className="dot">·</span>
-                <PathCost kind={sharedKind} />
-              </>
-            )}
+            {/* No separator before the badge: a pill is already visually
+                self-contained, and a dot beside it reads as a stray mark. */}
+            {sharedKind && <PathCost kind={sharedKind} />}
             <span className="dot">·</span>
             {idle ? (
               <span className="meta__field">waiting for a device</span>
@@ -362,7 +359,7 @@ function SharedBatch({files, paths}: {files: SharedFileView[]; paths: PathLookup
       {open && (
         <ul className="batch__items">
           {files.map(file => (
-            <SharedRow key={file.id} file={file} />
+            <SharedRow key={file.id} file={file} paths={paths} />
           ))}
         </ul>
       )}
@@ -403,12 +400,9 @@ function IncomingBatch({files, paths}: {files: TransferView[]; paths: PathLookup
             <span className="meta__field">from {files[0]?.peerName}</span>
             {/* Every file in a batch comes from one device, so one label is the
                 whole truth about what this batch costs. */}
-            {batchKind && (
-              <>
-                <span className="dot">·</span>
-                <PathCost kind={batchKind} />
-              </>
-            )}
+            {/* No separator before the badge: a pill is already visually
+                self-contained, and a dot beside it reads as a stray mark. */}
+            {batchKind && <PathCost kind={batchKind} />}
             {started && (
               <>
                 <span className="dot">·</span>
@@ -530,41 +524,61 @@ function SharedNote({note}: {note: SharedText}) {
   }
 
   return (
-    <li className="note">
-      <div className="note__body">
-        {/* Never dangerouslySetInnerHTML, and never a linkifier: only a message
-            that is entirely one http(s) URL becomes clickable, so what is read
-            and what is opened cannot differ. */}
-        <p ref={body} className={`note__text ${expanded ? '' : 'note__text--clipped'}`}>
-          {note.text}
-        </p>
-        <span className="note__meta">
-          <span className="note__from">{note.from ?? 'You'}</span>
-          {clipped && (
-            <button type="button" className="note__more" onClick={() => setExpanded(v => !v)}>
-              {expanded ? 'Less' : 'More'}
-            </button>
-          )}
-        </span>
-      </div>
-      <div className="note__actions">
+    // One row, not a card. A note is usually a link or a sentence, and the card
+    // it used to get spent 66px on 20px of text: the sender had its own line
+    // below, and three word-labelled buttons set the height. The sender now
+    // prefixes the text the way it would in any message list, and the controls
+    // are icons.
+    <li className={`note ${expanded ? 'note--open' : ''}`}>
+      <span className="note__from">{note.from ?? 'You'}</span>
+      {/* Never dangerouslySetInnerHTML, and never a linkifier: only a message
+          that is entirely one http(s) URL becomes clickable, so what is read
+          and what is opened cannot differ. */}
+      <p
+        ref={body}
+        className={`note__text ${expanded ? 'note__text--open' : 'note__text--clipped'}`}
+      >
+        {note.text}
+      </p>
+      {clipped && (
+        <button type="button" className="note__more" onClick={() => setExpanded(v => !v)}>
+          {expanded ? 'Less' : 'More'}
+        </button>
+      )}
+      <span className="note__actions">
         {link && (
-          <a className="button button--small" href={link} target="_blank" rel="noopener noreferrer">
-            Open
+          <a
+            className="button button--icon button--tiny"
+            href={link}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open link"
+            aria-label={`Open ${link}`}
+          >
+            <Icon name="link" size={14} />
           </a>
         )}
-        <button type="button" className="button button--small" onClick={() => void copy()}>
-          {copied ? 'Copied' : 'Copy'}
+        <button
+          type="button"
+          className="button button--icon button--tiny"
+          onClick={() => void copy()}
+          title={copied ? 'Copied' : 'Copy'}
+          aria-label={copied ? 'Copied' : 'Copy text'}
+        >
+          {/* The label carried the confirmation before; with an icon the tick
+              has to carry it, or a copy would look like nothing happened. */}
+          <Icon name={copied ? 'check' : 'copy'} size={14} />
         </button>
         <button
           type="button"
-          className="button button--icon"
+          className="button button--icon button--tiny"
           onClick={() => session.dismissText(note.id)}
+          title="Remove"
           aria-label="Remove"
         >
-          <Icon name="x" size={15} />
+          <Icon name="x" size={14} />
         </button>
-      </div>
+      </span>
     </li>
   )
 }

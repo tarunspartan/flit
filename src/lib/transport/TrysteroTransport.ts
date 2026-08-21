@@ -25,6 +25,43 @@ const PATH_POLL_MS = 2000
  * the relay is a hash of it. A relay operator therefore sees an opaque topic
  * and ciphertext, and cannot join the room or recover the code.
  */
+/**
+ * How much may sit queued on a data channel before the sender pauses.
+ *
+ * Trystero sets this to 64 KB and waits for `bufferedamountlow` whenever more
+ * than that is outstanding. Profiling a 200 MB send showed 99.5% of the
+ * sender's time inside that wait — reading the file and hashing it together
+ * came to 0.5% — so the queue depth, not the CPU, is what sets the rate.
+ */
+const BUFFER_HIGH_WATER = 8 * 1024 * 1024
+
+/**
+ * Raises that high-water mark for every data channel in the page.
+ *
+ * Patched on the prototype rather than on the channel because Trystero owns
+ * the channel and exposes neither end of it: the initiator creates it with
+ * createDataChannel, the answerer receives it through ondatachannel. The
+ * setter only ever raises a value, so anything asking for a deeper queue than
+ * ours still gets what it asked for.
+ */
+let bufferPatched = false
+function raiseChannelBuffering(): void {
+  if (bufferPatched || typeof RTCDataChannel === 'undefined') return
+  bufferPatched = true
+  const proto = RTCDataChannel.prototype
+  const original = Object.getOwnPropertyDescriptor(proto, 'bufferedAmountLowThreshold')
+  if (!original?.get || !original.set) return
+  const {get, set} = original
+  Object.defineProperty(proto, 'bufferedAmountLowThreshold', {
+    configurable: true,
+    enumerable: original.enumerable,
+    get,
+    set(this: RTCDataChannel, value: number) {
+      set.call(this, Math.max(value, BUFFER_HIGH_WATER))
+    }
+  })
+}
+
 export class TrysteroTransport implements Transport {
   readonly selfId = selfId
 
@@ -52,6 +89,9 @@ export class TrysteroTransport implements Transport {
     if (typeof RTCPeerConnection === 'undefined') {
       throw new AppError('unsupported-browser', 'RTCPeerConnection is unavailable')
     }
+    // Before any channel exists, so both the one we create and the one the
+    // other device offers us are covered.
+    raiseChannelBuffering()
 
     const topic = await deriveRoomTopic(APP_ID, code)
     const iceServers = resolveIceServers(this.#localOnly)

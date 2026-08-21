@@ -6,8 +6,8 @@
  * the bright #2f6bff it replaces and much darker, so it reads as considered
  * rather than neon. It stays 87 degrees clear of the nearest status colour
  * (--ok at 158), which is what keeps "do this" from looking like "this
- * finished"; green, amber and red are all spoken for by --ok, --warn/--relay
- * and --danger, so the accent cannot live in any of them.
+ * finished"; green, amber and red are all spoken for by --ok, --warn and
+ * --danger, so the accent cannot live in any of them.
  *
  * Every foreground here clears WCAG 2.1 AA against the darkest surface it can
  * land on (4.5:1 for text, 3:1 for controls and focus rings under SC 1.4.11).
@@ -33,7 +33,6 @@
   --warn-soft: #fdf3e0;
   --danger: #c73f34;
   --danger-soft: #fdecea;
-  --relay: #95660c;
   --shadow: 0 1px 2px rgb(16 19 26 / 6%), 0 8px 24px -12px rgb(16 19 26 / 18%);
   --radius: 14px;
   --radius-sm: 9px;
@@ -60,7 +59,6 @@
     --warn-soft: #2a2110;
     --danger: #ff6b5e;
     --danger-soft: #2c1512;
-    --relay: #e0a63f;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -16px rgb(0 0 0 / 70%);
     color-scheme: dark;
   }
@@ -83,7 +81,6 @@
   --warn-soft: #2a2110;
   --danger: #ff6b5e;
   --danger-soft: #2c1512;
-  --relay: #e0a63f;
   --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -16px rgb(0 0 0 / 70%);
   color-scheme: dark;
 }
@@ -175,6 +172,25 @@ button {
   flex-direction: column;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
     env(safe-area-inset-left);
+}
+
+/* Sits opposite the controls, on the same line as them. Inverted rather than
+   accent-coloured: the accent means "act on this", and the mark is not a
+   control — it is the only thing on screen that is purely identity. */
+.brand {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  left: max(14px, env(safe-area-inset-left));
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--bg);
+  box-shadow: var(--shadow);
+  pointer-events: none;
 }
 
 .fabs {
@@ -334,12 +350,7 @@ button {
   white-space: nowrap;
 }
 
-.peer__away {
-  font-size: 12px;
-  color: var(--text-faint);
-}
-
-.peer .badge {
+.peer .pathcost {
   align-self: flex-start;
 }
 
@@ -492,10 +503,33 @@ button {
  * hue alone fails SC 1.4.1 for anyone who cannot see the difference. It
  * inherits the meta line's colour deliberately — this is one more fact about
  * the transfer, sitting with the others. */
+/* A badge, not a second name.
+ *
+ * It set no colour at all before, so it inherited --text while the device name
+ * beside it was --text-soft: the network label was the louder of the two, and
+ * "Tarun's Mac Mini M4" and "Local network" read as one run of text with no
+ * indication which was which. The device list shows this same pill now, so
+ * the same fact looks the same everywhere it appears.
+ *
+ * The fill is a tint of the text colour rather than a surface token, because
+ * this sits on cards, on the page, and inside the surface-2 panel an expanded
+ * row opens — a fixed background would vanish against one of them.
+ *
+ * --text-soft rather than --text-faint: the faint token was tuned to clear
+ * 4.5:1 against the plain surfaces, and the tint underneath darkens the ground
+ * enough to drop it to 3.46:1. Soft on a 5% tint holds at 4.87:1 across every
+ * surface this lands on, in both themes, and is still a clear step below the
+ * device name beside it. */
 .pathcost {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex: none;
+  padding: 1px 7px 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-soft);
+  font-size: 11.5px;
   white-space: nowrap;
 }
 
@@ -565,17 +599,79 @@ button {
   white-space: nowrap;
 }
 
-.row__state--completed {
+/* The direction glyph sits with the number, not competing with it. */
+.row__state .icon {
+  opacity: 0.65;
+}
+
+/* One place for what a state means, used by the card chip, the row state and
+   the peer line alike. They each had their own copy, and the copies disagreed:
+   RECONNECTING was red as a label while its own progress bar was amber. */
+.state--ok {
   color: var(--ok);
 }
 
-.row__state--failed,
-.row__state--reconnecting {
+.state--warn {
+  color: var(--warn);
+}
+
+.state--bad {
   color: var(--danger);
 }
 
-.row__state--paused {
-  color: var(--warn);
+/* The row's own disclosure. A file inside a batch has exactly the same things
+   to say about itself as one shared alone — speed, bytes, storage, integrity,
+   which devices it is going to — and batching is only about offering several
+   at once. Opening a row shows the same body the card shows, so the two can
+   never drift into different feature sets. */
+.row__toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 4px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.row__toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.row__toggle .icon {
+  transition: transform 0.15s;
+}
+
+.row__toggle.is-open .icon {
+  transform: rotate(180deg);
+}
+
+/* Full width beneath the row's own line, and visually attached to it. */
+.row__body {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+/* Indented peer lines are already inside a panel here. */
+.row__body .peerlines {
+  padding-left: 0;
+}
+
+.row__body .shared__waiting {
+  padding-left: 0;
+}
+
+.row--open {
+  border-bottom: 0;
 }
 
 .row__acts {
@@ -604,12 +700,6 @@ button {
   color: var(--warn);
 }
 
-/* Accepted but waiting its turn: the same weight as the other states, in the
-   quiet colour, because nothing is wrong — it just has not started. */
-.incoming__state--queued {
-  color: var(--text-faint);
-}
-
 .incoming__queued {
   flex: 1;
   min-width: 0;
@@ -617,54 +707,78 @@ button {
   color: var(--text-faint);
 }
 
+/* One line where the text allows it. Sender, text, and icon controls share the
+   row; the padding is a row's, not a card's. */
 .note {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 11px 13px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: var(--surface);
 }
 
-.note__body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+.note__from {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-faint);
+  max-width: 26%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .note__text {
+  flex: 1;
+  min-width: 0;
   margin: 0;
-  font-size: 14px;
+  font-size: 13.5px;
   /* Keeps pasted line breaks, and stops a long URL widening the column. */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* A pasted paragraph should not make the list unreadable, so it arrives folded
-   to three lines with a way to open it. */
+/* A pasted paragraph should not take over the list, so it arrives folded with a
+   way to open it. Two lines rather than three: the row is the point. */
 .note__text--clipped {
   display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.note__meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* Centred is right for the one line a note usually is. Opened, it is a block
+   several times taller than its own controls, and centring left the sender and
+   the buttons floating in the middle of the paragraph. */
+.note--open {
+  align-items: flex-start;
 }
 
-.note__from {
-  font-size: 12px;
-  color: var(--text-faint);
+/* Nudges the smaller sender text onto the first line's baseline, which
+   flex-start alone does not do when the two font sizes differ. */
+.note--open .note__from,
+.note--open .note__more,
+.note--open .note__actions {
+  margin-top: 1px;
+}
+
+/* Opened, but still bounded.
+ *
+ * A note is capped at 2000 characters, which laid out is about 1430px — twice a
+ * phone screen. Expanding one used to push everything else off the home screen
+ * and leave you scrolling the page to reach the next thing. It gets a generous
+ * window and scrolls inside itself instead; `contain` stops that scroll from
+ * chaining into the page and the bottom sheet behind it. */
+.note__text--open {
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .note__more {
+  flex: none;
   padding: 0;
   border: 0;
   background: none;
@@ -678,7 +792,7 @@ button {
 .note__actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   flex: none;
 }
 
@@ -1105,10 +1219,6 @@ button {
   font-weight: 550;
 }
 
-.device--away {
-  background: var(--surface-2);
-  color: var(--text-faint);
-}
 
 .device--pending {
   background: var(--warn-soft);
@@ -1305,12 +1415,20 @@ button {
   font-size: 12.5px;
 }
 
+/* Hugs the name. The 84px column it used to reserve made every bar start at
+   the same x, which was worth something when the name stood alone — but with
+   the network label beside it, a short name like "Mac" left 54px of gap
+   between the two things that belong together. The row's own gap separates
+   them now. */
+/* The device is the identity of the line, so it is the strongest thing on it —
+   above the badge beside it, which is a property of the connection rather than
+   a name. */
 .row--peer .row__name {
   flex: none;
-  min-width: 84px;
+  min-width: 0;
   max-width: 34%;
-  color: var(--text-soft);
-  font-weight: 550;
+  color: var(--text);
+  font-weight: 600;
 }
 
 .row--peer .row__bar {
@@ -1342,73 +1460,62 @@ button {
   flex: none;
 }
 
-.incoming__state--completed {
-  color: var(--ok);
-}
+/* One line of consequence: storage advice before you decide, and what became
+   of it afterwards. Three tones, one shape.
 
-.incoming__state--failed,
-.incoming__state--reconnecting {
-  color: var(--danger);
-}
-
-.incoming__warning {
+   Deliberately not filled callouts. Their soft background tokens drop the
+   light-theme text to 4.41:1 (ok) and 4.38:1 (danger) — under AA — while a
+   plain line on the card clears 5.0:1, and reads as the report it is. */
+.note-line {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 0;
-  padding: 9px 11px;
-  border-radius: var(--radius-sm);
-  background: var(--warn-soft);
-  color: var(--warn);
   font-size: 12.5px;
 }
 
-.incoming__progress {
+.note-line .icon {
+  flex: none;
+}
+
+.note-line--ok {
+  color: var(--ok);
+}
+
+.note-line--warn {
+  color: var(--warn);
+}
+
+.note-line--bad {
+  color: var(--danger);
+}
+
+.progressblock {
   display: flex;
   flex-direction: column;
   gap: 7px;
 }
 
-.incoming__numbers {
+/* How far, how much, how fast, how long — always in that order, always in the
+   same places, so the eye can find one without reading the others. */
+.stats {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 7px;
   flex-wrap: wrap;
   font-size: 12.5px;
   color: var(--text-soft);
   font-variant-numeric: tabular-nums;
 }
 
-.incoming__percent {
+.stats__percent {
   font-weight: 650;
   color: var(--text);
 }
 
-.incoming__speed {
+.stats__speed {
   color: var(--accent);
   font-weight: 550;
-}
-
-.incoming__outcome {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 13px;
-  color: var(--ok);
-}
-
-.incoming__error {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin: 0;
-  font-size: 13px;
-  color: var(--danger);
-}
-
-.incoming__error span {
-  color: var(--text-soft);
 }
 
 .incoming__actions {
@@ -1439,36 +1546,6 @@ button {
 
 .progress--done .progress__fill {
   background: var(--ok);
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 600;
-  background: rgb(0 0 0 / 6%);
-  color: inherit;
-}
-
-.badge__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-/* Secondary half of the badge: the same size, stepped back so the two labels
-   stay distinguishable without punctuation between them. */
-.badge__network {
-  font-weight: 500;
-  opacity: 0.62;
-}
-
-.badge--relay {
-  color: var(--relay);
 }
 
 .details-toggle {
@@ -1981,11 +2058,18 @@ button {
   }
 
   /* A "·" between two fields cannot survive the line break between them: it
-     ends up leading the next line, where it reads as a bullet rather than as
-     punctuation. Spacing does the separating once the line wraps. */
+     is left dangling at the end of one line or leading the next, where it
+     reads as a stray mark rather than as punctuation. Spacing does the
+     separating once the line is allowed to wrap. */
   .batch__meta .dot,
-  .incoming__meta .dot {
+  .incoming__meta .dot,
+  .shared__meta .dot,
+  .stats .dot {
     display: none;
+  }
+
+  .stats {
+    column-gap: 10px;
   }
 
   /* Only when there is a real action to make room for. A toggle on its own

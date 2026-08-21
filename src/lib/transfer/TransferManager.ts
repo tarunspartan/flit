@@ -62,6 +62,8 @@ export class TransferManager {
   #claimed = new Map<string, string>()
   #nextSeq = 1
   #watchdog: ReturnType<typeof setInterval> | null = null
+  /** When the watchdog last ran, so a late tick can be recognised as a freeze. */
+  #lastTick = Date.now()
 
   constructor(linkFor: (peerId: string) => PeerLink, prefs: StoragePreferences) {
     this.#linkFor = linkFor
@@ -311,8 +313,26 @@ export class TransferManager {
       this.#pumpDownloads(transfer.peerId)
       return
     }
+    this.#beginDownload(transfer)
+  }
+
+  /**
+   * Starts a download in the claimed slot, and hands the slot back if it never
+   * actually began.
+   *
+   * Dismissing the save dialog leaves the transfer in WAITING_FOR_ACCEPT, which
+   * is not terminal — so #downloading would go on seeing the claim as live and
+   * every queued file would wait behind a download that never started.
+   */
+  #beginDownload(transfer: ReceiveTransfer): void {
     this.#claimed.set(transfer.peerId, transfer.id)
-    void transfer.accept()
+    void transfer.accept().finally(() => {
+      if (transfer.state !== 'WAITING_FOR_ACCEPT') return
+      if (this.#claimed.get(transfer.peerId) === transfer.id) {
+        this.#claimed.delete(transfer.peerId)
+      }
+      this.#pumpDownloads(transfer.peerId)
+    })
   }
 
   /**
@@ -377,8 +397,7 @@ export class TransferManager {
     if (!next) return
     this.#queuedAccepts.delete(next.id)
     next.queuePosition = null
-    this.#claimed.set(peerId, next.id)
-    void next.accept()
+    this.#beginDownload(next)
   }
 
   reject(id: string): void {
@@ -513,9 +532,30 @@ export class TransferManager {
 
   #tick(): void {
     const now = Date.now()
+
+    // A tick that lands far later than it was scheduled means this page was not
+    // running between the two — a phone that locked, a laptop that slept, a tab
+    // the OS froze. None of that is evidence about the transfer, so the missing
+    // time is credited back before anything is judged on it. Detected from the
+    // clock rather than from a visibility event, so laptop sleep and a frozen
+    // background tab are both covered without touching the DOM.
+    const overdue = now - this.#lastTick - STALL_TICK_MS
+    this.#lastTick = now
+    if (overdue > STALL_TICK_MS) {
+      for (const transfer of this.#sends.values()) transfer.creditFrozen(overdue)
+      for (const transfer of this.#receives.values()) transfer.creditFrozen(overdue)
+    }
+
     for (const transfer of this.#sends.values()) transfer.checkStall(now)
     for (const transfer of this.#receives.values()) transfer.checkStall(now)
-    for (const peerId of this.#peers.keys()) this.#pumpQueue(peerId)
+    for (const peerId of this.#peers.keys()) {
+      this.#pumpQueue(peerId)
+      // Belt and braces for the download queue. It is normally released by the
+      // running transfer's own onChange, and a single missed callback used to
+      // strand every queued file behind it until the user backed one out and
+      // asked again. A queue that re-checks itself cannot get permanently stuck.
+      this.#pumpDownloads(peerId)
+    }
     this.#changed()
   }
 

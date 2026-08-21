@@ -77,7 +77,7 @@ export function Sidebar({state, onClose}: {state: SessionSnapshot; onClose: () =
         </header>
 
         {tab === 'settings' ? (
-          <Settings state={state} onJoined={dismiss} />
+          <Settings state={state} onDismiss={dismiss} />
         ) : (
           <About state={state} />
         )}
@@ -155,7 +155,7 @@ function About({state}: {state: SessionSnapshot}) {
   )
 }
 
-function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => void}) {
+function Settings({state, onDismiss}: {state: SessionSnapshot; onDismiss: () => void}) {
   const [theme, setTheme] = useTheme()
   const [name, setName] = useState(state.selfName)
 
@@ -192,7 +192,7 @@ function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => vo
         </div>
       </div>
 
-      <JoinByCode onJoined={onJoined} />
+      <JoinByCode onJoined={onDismiss} />
 
       <label className="toggle">
         <input
@@ -238,13 +238,29 @@ function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => vo
         </span>
       </label>
 
-      <button
-        type="button"
-        className="button button--danger"
-        onClick={() => void session.endSession()}
-      >
-        Disconnect everything
-      </button>
+      {/* One action, not two. Disconnecting and starting over were separate
+          steps with a dead-end screen between them, and the screen's only
+          button was the step everybody took next. */}
+      <div className="field">
+        <button
+          type="button"
+          className="button button--danger"
+          onClick={async () => {
+            // Closed only on success: a failed restart leaves the error banner
+            // on the room screen, and closing over it would hide the reason.
+            if (await session.restart()) onDismiss()
+          }}
+        >
+          Disconnect and start over
+        </button>
+        {/* "The code stops working" would overclaim: nobody owns a code here,
+            and a device still in the old room stays there. What is true is that
+            it no longer reaches this device. */}
+        <span className="field__hint">
+          Every device is disconnected and you move to a new code. The old one no longer reaches
+          you.
+        </span>
+      </div>
     </div>
   )
 }
