@@ -18,6 +18,20 @@ const CHUNK_ACTION = 'chunk'
 const PATH_POLL_MS = 2000
 
 /**
+ * How long a fresh connection may look 'direct' before we say so out loud.
+ *
+ * ICE nominates whatever pair validates first, which is routinely the
+ * STUN-mapped one — the host pair needs mDNS resolution and arrives a moment
+ * later, and ICE then renominates to it. Read at that instant the verdict is
+ * honestly 'direct', but 'direct' only ever means "locality could not be
+ * shown", never "this is remote". Asserting "Internet" from it and correcting
+ * to "Local network" seconds later told people their LAN transfer was going
+ * over the internet when it was not. A positive finding — 'local' or 'relay' —
+ * is evidence and shows immediately; the absence of one waits.
+ */
+const PATH_SETTLE_MS = 6000
+
+/**
  * The only file in the app that imports Trystero.
  *
  * Pairing code handling matters here: the code is used as the Trystero
@@ -68,6 +82,8 @@ export class TrysteroTransport implements Transport {
   #room: Room | null = null
   #emitter = new Emitter<TransportEvents>()
   #paths = new Map<PeerId, NetworkPath>()
+  /** When each peer's connection appeared, for PATH_SETTLE_MS. */
+  #pathSince = new Map<PeerId, number>()
   #pathTimer: ReturnType<typeof setInterval> | null = null
   #localOnly: boolean
   #sendControl: ((data: unknown, options: {target: string}) => Promise<void>) | null = null
@@ -137,6 +153,7 @@ export class TrysteroTransport implements Transport {
 
     room.onPeerJoin = peerId => {
       this.#paths.set(peerId, UNKNOWN_PATH)
+      this.#pathSince.set(peerId, Date.now())
       this.#emitter.emit('peerJoin', {peerId})
       void this.#pollPaths()
       this.#startPolling()
@@ -144,6 +161,7 @@ export class TrysteroTransport implements Transport {
 
     room.onPeerLeave = peerId => {
       this.#paths.delete(peerId)
+      this.#pathSince.delete(peerId)
       this.#emitter.emit('peerLeave', {peerId})
       if (Object.keys(room.getPeers()).length === 0) this.#stopPolling()
     }
@@ -156,6 +174,7 @@ export class TrysteroTransport implements Transport {
     this.#sendControl = null
     this.#sendChunk = null
     this.#paths.clear()
+    this.#pathSince.clear()
     this.#emitter.clear()
     if (room) await room.leave().catch(() => {})
   }
@@ -221,7 +240,13 @@ export class TrysteroTransport implements Transport {
 
     for (const [peerId, connection] of Object.entries(room.getPeers())) {
       const previous = this.#paths.get(peerId)
-      const path = steadyPath(previous, await classifyPath(connection))
+      const fresh = await classifyPath(connection)
+      const since = this.#pathSince.get(peerId) ?? 0
+      const settling =
+        fresh.kind === 'direct' &&
+        previous?.kind !== 'local' &&
+        Date.now() - since < PATH_SETTLE_MS
+      const path = settling ? UNKNOWN_PATH : steadyPath(previous, fresh)
       this.#paths.set(peerId, path)
       // Only wake the UI when the classification actually changes; RTT drifts
       // constantly and is read from the snapshot instead.
