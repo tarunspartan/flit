@@ -25,7 +25,7 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
   const sharing = groupByBatch(state.shared)
   // Rebuilt each render on purpose: the path is what changes, and a memo keyed
   // on the peer list would miss a link flipping from direct to relay.
-  const paths: PathLookup = new Map(state.peers.map(peer => [peer.id, peer.path.kind]))
+  const paths: PathLookup = new Map(state.peers.map(peer => [peer.id, peer.path]))
   const hasContent = state.shared.length > 0 || state.incoming.length > 0
   // Counts both directions, because that is what cancelling all of them does.
   // Offered only past one: with a single transfer its own Cancel is right there,
@@ -119,7 +119,7 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
                 <IncomingFile
                   key={group.key}
                   transfer={group.items[0]!}
-                  kind={paths.get(group.items[0]!.peerId)}
+                  path={paths.get(group.items[0]!.peerId)}
                 />
               )
             )}
@@ -156,7 +156,7 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
                 <IncomingFile
                   key={group.key}
                   transfer={group.items[0]!}
-                  kind={paths.get(group.items[0]!.peerId)}
+                  path={paths.get(group.items[0]!.peerId)}
                 />
               )
             )}
@@ -315,7 +315,7 @@ function SharedBatch({files, paths}: {files: SharedFileView[]; paths: PathLookup
   // the same way. One label is only honest when they all agree; when they do
   // not, the per-device breakdown on each file is the answer, not an average.
   const kinds = new Set(
-    files.flatMap(file => file.transfers.map(transfer => paths.get(transfer.peerId)))
+    files.flatMap(file => file.transfers.map(transfer => paths.get(transfer.peerId)?.kind))
   )
   const sharedKind = kinds.size === 1 ? [...kinds][0] : undefined
 
@@ -384,7 +384,7 @@ function IncomingBatch({files, paths}: {files: TransferView[]; paths: PathLookup
   const undecided = files.filter(
     file => file.state === 'WAITING_FOR_ACCEPT' && file.queuePosition === null
   )
-  const batchKind = files[0] ? paths.get(files[0].peerId) : undefined
+  const batchKind = files[0] ? paths.get(files[0].peerId)?.kind : undefined
 
   return (
     <li className="batch">
@@ -430,7 +430,7 @@ function IncomingBatch({files, paths}: {files: TransferView[]; paths: PathLookup
       {open && (
         <ul className="batch__items">
           {files.map(file => (
-            <IncomingRow key={file.id} transfer={file} />
+            <IncomingRow key={file.id} transfer={file} path={paths.get(file.peerId)} />
           ))}
         </ul>
       )}

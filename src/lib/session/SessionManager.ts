@@ -25,7 +25,7 @@ import {
 } from '../utils/device.ts'
 import {randomId} from '../core/ids.ts'
 import {sanitizeSharedText} from '../utils/text.ts'
-import {RoomManager, type RoomRole} from './RoomManager.ts'
+import {RoomManager, loadRoom, saveRoom, type RoomRole} from './RoomManager.ts'
 
 export type SessionStatus = 'starting' | 'open' | 'ended'
 
@@ -218,6 +218,20 @@ export class SessionManager {
     return this.#start(() => this.#rooms.create())
   }
 
+  /**
+   * Rejoins the room this tab was already in, or opens a new one.
+   *
+   * What a reload should do. Opening a fresh room on every load meant applying
+   * an app update quietly moved this device to a new code while the other
+   * device sat on the old one — which reads as "it won't connect", and is why
+   * starting over appeared to fix it.
+   */
+  async resumeOrOpen(): Promise<boolean> {
+    const saved = loadRoom()
+    if (!saved) return this.openRoom()
+    return this.#start(() => this.#rooms.resume(saved) ?? this.#rooms.create())
+  }
+
   async joinRoom(input: string): Promise<boolean> {
     return this.#start(() => this.#rooms.join(input))
   }
@@ -259,6 +273,7 @@ export class SessionManager {
       await transport.join(room.code)
 
       this.#status = 'open'
+      saveRoom(this.#rooms.current)
       this.#armExpiry()
       this.#watchSignaling()
       return true
@@ -857,6 +872,8 @@ export class SessionManager {
   }
 
   #end(error: AppError | null): void {
+    // Nothing to come back to: a reload after this should start clean.
+    saveRoom(null)
     this.#transfers.stopAll()
     this.#error = error
     this.#status = 'ended'

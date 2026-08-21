@@ -1,5 +1,5 @@
 import {useState, type ReactNode} from 'react'
-import type {PathKind} from '../../lib/transport/Transport.ts'
+import type {NetworkPath} from '../../lib/transport/Transport.ts'
 import type {SharedFileView, TransferView} from '../../lib/transfer/states.ts'
 import {isMoving, isQueued, isTerminal} from '../../lib/transfer/states.ts'
 import {formatBytes, formatDuration, formatPercent, formatSpeed} from '../../lib/utils/format.ts'
@@ -55,7 +55,7 @@ const SELF_EVIDENT: ReadonlySet<string> = new Set(['transfer-cancelled', 'transf
  * to relay re-renders the rows that show it — the snapshot is what drives the
  * tree, and a component reaching around it would keep a stale label.
  */
-export type PathLookup = ReadonlyMap<string, PathKind>
+export type PathLookup = ReadonlyMap<string, NetworkPath>
 
 /** What a receiver may do with a transfer, and what to call it. */
 interface Action {
@@ -184,14 +184,14 @@ function SharedBody({file, paths}: {file: SharedFileView; paths: PathLookup}) {
   return (
     <ul className="peerlines">
       {file.transfers.map(transfer => (
-        <PeerLine key={transfer.id} transfer={transfer} kind={paths.get(transfer.peerId)} />
+        <PeerLine key={transfer.id} transfer={transfer} path={paths.get(transfer.peerId)} />
       ))}
     </ul>
   )
 }
 
 /** How one device is doing with the file above it, and over what. */
-function PeerLine({transfer, kind}: {transfer: TransferView; kind: PathKind | undefined}) {
+function PeerLine({transfer, path}: {transfer: TransferView; path: NetworkPath | undefined}) {
   const {state} = transfer
 
   return (
@@ -199,7 +199,7 @@ function PeerLine({transfer, kind}: {transfer: TransferView; kind: PathKind | un
       <span className="row__name">{transfer.peerName}</span>
       {/* Per device, not per file: a laptop on the same Wi-Fi and a phone on
           mobile data are the same file costing two very different things. */}
-      {kind && !isTerminal(state) && <PathCost kind={kind} />}
+      {path && !isTerminal(state) && <PathCost kind={path.kind} />}
 
       {isMoving(state) && (
         <span className="row__bar">
@@ -229,7 +229,7 @@ function PeerLine({transfer, kind}: {transfer: TransferView; kind: PathKind | un
 }
 
 /** A file another device is offering to this one. */
-export function IncomingFile({transfer, kind}: {transfer: TransferView; kind: PathKind | undefined}) {
+export function IncomingFile({transfer, path}: {transfer: TransferView; path: NetworkPath | undefined}) {
   const {state} = transfer
   const queued = isQueued(transfer)
 
@@ -257,7 +257,7 @@ export function IncomingFile({transfer, kind}: {transfer: TransferView; kind: Pa
             <span className="meta__field">from {transfer.peerName}</span>
             {/* No separator before the badge: a pill is already visually
                 self-contained, and a dot beside it reads as a stray mark. */}
-            {kind && <PathCost kind={kind} />}
+            {path && <PathCost kind={path.kind} />}
           </span>
         </div>
         {/* An undecided file has no chip: its Download button is its state, and
@@ -271,7 +271,7 @@ export function IncomingFile({transfer, kind}: {transfer: TransferView; kind: Pa
         )}
       </div>
 
-      <IncomingBody transfer={transfer} />
+      <IncomingBody transfer={transfer} path={path} />
     </li>
   )
 }
@@ -286,7 +286,7 @@ export function IncomingFile({transfer, kind}: {transfer: TransferView; kind: Pa
  * and its details table purely because of where it was drawn. One body means
  * the two densities cannot drift apart again.
  */
-function IncomingBody({transfer}: {transfer: TransferView}) {
+function IncomingBody({transfer, path}: {transfer: TransferView; path?: NetworkPath}) {
   const [expanded, setExpanded] = useState(false)
   const {state} = transfer
   // Anything that ran has numbers worth keeping, whether it finished or not.
@@ -322,7 +322,7 @@ function IncomingBody({transfer}: {transfer: TransferView}) {
             <Icon name="chevron" size={15} />
             Details
           </button>
-          {expanded && <Details transfer={transfer} />}
+          {expanded && <Details transfer={transfer} path={path} />}
         </>
       )}
     </>
@@ -439,7 +439,7 @@ function CardActions({transfer}: {transfer: TransferView}) {
  * opened batch gets rows instead: what you need at a glance, plus whatever you
  * might actually act on. A file shared on its own still gets the card.
  */
-export function IncomingRow({transfer}: {transfer: TransferView}) {
+export function IncomingRow({transfer, path}: {transfer: TransferView; path?: NetworkPath}) {
   const [open, setOpen] = useState(false)
   const {state} = transfer
   const queued = isQueued(transfer)
@@ -501,7 +501,7 @@ export function IncomingRow({transfer}: {transfer: TransferView}) {
 
       {open && (
         <div className="row__body">
-          <IncomingBody transfer={transfer} />
+          <IncomingBody transfer={transfer} path={path} />
         </div>
       )}
     </li>
@@ -652,7 +652,7 @@ function elapsedSeconds(transfer: TransferView): number | null {
   return seconds > 0 ? seconds : null
 }
 
-function Details({transfer}: {transfer: TransferView}) {
+function Details({transfer, path}: {transfer: TransferView; path?: NetworkPath}) {
   const done = transfer.state === 'COMPLETED'
   const elapsed = elapsedSeconds(transfer)
 
@@ -668,6 +668,13 @@ function Details({transfer}: {transfer: TransferView}) {
     ['Type', transfer.mimeType]
   ]
   if (done && elapsed !== null) rows.push(['Took', formatDuration(elapsed)])
+  // The round trip is the honest check on the label above: a link that really
+  // is local answers in single-digit milliseconds, and one that says "Local
+  // network" while measuring 25ms is not going the way it claims.
+  if (path) {
+    const rtt = path.roundTripMs === null ? '' : ` · ${Math.round(path.roundTripMs)} ms`
+    rows.push(['Connection', `${path.network}${rtt}`])
+  }
   if (transfer.storageKind) {
     rows.push(['Storage', STORAGE_LABEL[transfer.storageKind] ?? transfer.storageKind])
   }

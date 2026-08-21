@@ -193,30 +193,36 @@ export function PathCost({kind, away = false}: {kind: PathKind; away?: boolean})
   const local = cost === 'local'
   const relayed = kind === 'relay'
 
-  const label = pending
-    ? away
-      ? 'Reconnecting'
-      : 'Connecting'
-    : relayed
-      ? 'Via relay'
-      : local
-        ? 'Local network'
-        : 'Internet'
+  // "Connected" rather than "Connecting" while the path is still unknown. The
+  // device is connected — that happened before this badge existed — and only
+  // *how* it is reachable is outstanding. Saying "Connecting" for the seconds
+  // ICE takes to settle understated a link that was already carrying files.
+  const label = away
+    ? 'Reconnecting'
+    : pending
+      ? 'Connected'
+      : relayed
+        ? 'Via relay'
+        : local
+          ? 'Local network'
+          : 'Internet'
 
   return (
     <span
-      className={`pathcost ${pending ? 'pathcost--pending' : ''}`}
+      className="pathcost"
       title={
-        pending
-          ? 'Working out how this device is reachable'
-          : relayed
-            ? 'Travelling through a relay server, which can see the connection but not the contents'
-            : local
-              ? 'Travelling over your own network — this does not use your internet data'
-              : 'Travelling over the internet — this uses your connection'
+        away
+          ? 'Trying to reach this device again'
+          : pending
+            ? 'Connected — still working out which network the bytes take'
+            : relayed
+              ? 'Travelling through a relay server, which can see the connection but not the contents'
+              : local
+                ? 'Travelling over your own network — this does not use your internet data'
+                : 'Travelling over the internet — this uses your connection'
       }
     >
-      <Icon name={pending ? 'retry' : local ? 'wifi' : 'globe'} size={13} />
+      <Icon name={away ? 'retry' : pending ? 'device' : local ? 'wifi' : 'globe'} size={13} />
       {label}
     </span>
   )

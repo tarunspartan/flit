@@ -239,7 +239,9 @@ function useAutoRoom() {
         history.replaceState(null, '', location.pathname + location.search)
         open = await session.joinRoom(code)
       } else {
-        open = await session.openRoom()
+        // Resume rather than open: a reload — including the one that applies
+        // an update — should land back in the room this tab was already in.
+        open = await session.resumeOrOpen()
       }
 
       if (!shared) return
