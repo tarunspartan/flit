@@ -21,6 +21,7 @@ export type ErrorCode =
   | 'file-changed'
   | 'too-large'
   | 'too-many-files'
+  | 'save-cancelled'
   | 'storage-unavailable'
   | 'storage-full'
   | 'finalize-failed'
@@ -124,6 +125,14 @@ const MESSAGES: Record<ErrorCode, Friendly> = {
     title: 'Too many files at once',
     message: 'Send them in smaller batches.',
     retryable: false
+  },
+  // Never reaches the user in the normal path — dismissing the save dialog puts
+  // the Download button back rather than reporting anything. It exists so the
+  // decision can be told apart from a genuine storage failure on the way up.
+  'save-cancelled': {
+    title: 'Download not started',
+    message: 'No location was chosen, so nothing was saved. You can download it again.',
+    retryable: true
   },
   'storage-unavailable': {
     title: "This browser can't save the file safely",

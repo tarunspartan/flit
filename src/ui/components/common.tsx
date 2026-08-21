@@ -171,69 +171,53 @@ export function ProgressBar({value, state}: {value: number; state?: 'active' | '
   )
 }
 
-const PATH_LABEL: Record<PathKind, string> = {
-  local: 'Direct P2P',
-  direct: 'Direct P2P',
-  relay: 'Relayed P2P',
-  unknown: 'Connecting'
-}
-
-/** The trust signal from §63: visible, but only three states to understand. */
-export function PathBadge({
-  kind,
-  network,
-  compact
-}: {
-  kind: PathKind
-  network: string
-  compact?: boolean
-}) {
-  return (
-    // The gap between the two labels is flex spacing, not a text node, so the
-    // element's own text runs them together. Screen readers get the label.
-    <span
-      className={`badge badge--${kind}`}
-      title={`${PATH_LABEL[kind]} · ${network}`}
-      aria-label={compact ? PATH_LABEL[kind] : `${PATH_LABEL[kind]}, ${network}`}
-    >
-      {/* One dot, one meaning. A separator dot next to the status dot read as
-          two dots that disagree about their size rather than as punctuation;
-          the network reads as secondary from its weight instead. */}
-      <span className="badge__dot" aria-hidden="true" />
-      {PATH_LABEL[kind]}
-      {!compact && <span className="badge__network">{network}</span>}
-    </span>
-  )
-}
-
 /**
- * Where these bytes are going, in the one word that decides whether they cost
- * anything: your own network, or your connection to the world.
+ * Where these bytes are going, as one pill wherever the path is shown.
  *
- * A separate element from PathBadge, which answers a different question — that
- * one is the trust signal ("is a server in the middle"), this one is the
- * bandwidth signal. They agree because both read the same `kind`, but they are
- * shown in different places and one is not a smaller version of the other.
+ * Four labels and no more: Local network, Internet, Via relay, and Connecting
+ * (or Reconnecting, for a device that has dropped). A separate "Direct P2P"
+ * badge used to sit beside this in the device list, but with no TURN
+ * configured it could only ever read "Direct P2P" — a value that never varies
+ * is decoration, not information, and the claim it was making ("no server in
+ * the middle") is stated properly in About.
  *
- * Renders nothing until the path is actually known: "Connecting…" in the middle
- * of a size and a sender name is noise, and a guess about someone's data plan
- * is worse than saying nothing.
+ * Relay is still named rather than folded into "Internet": for bandwidth the
+ * two are identical and bandwidthCost is right to collapse them, but a relay
+ * means a server is carrying the bytes and that is worth saying. It cannot
+ * happen with this app's own configuration; a peer running one with TURN
+ * would still be reported honestly.
  */
-export function PathCost({kind}: {kind: PathKind}) {
+export function PathCost({kind, away = false}: {kind: PathKind; away?: boolean}) {
   const cost = bandwidthCost(kind)
-  if (cost === null) return null
+  const pending = away || cost === null
   const local = cost === 'local'
+  const relayed = kind === 'relay'
+
+  const label = pending
+    ? away
+      ? 'Reconnecting'
+      : 'Connecting'
+    : relayed
+      ? 'Via relay'
+      : local
+        ? 'Local network'
+        : 'Internet'
+
   return (
     <span
-      className="pathcost"
+      className={`pathcost ${pending ? 'pathcost--pending' : ''}`}
       title={
-        local
-          ? 'Travelling over your own network — this does not use your internet data'
-          : 'Travelling over the internet — this uses your connection'
+        pending
+          ? 'Working out how this device is reachable'
+          : relayed
+            ? 'Travelling through a relay server, which can see the connection but not the contents'
+            : local
+              ? 'Travelling over your own network — this does not use your internet data'
+              : 'Travelling over the internet — this uses your connection'
       }
     >
-      <Icon name={local ? 'wifi' : 'globe'} size={13} />
-      {local ? 'Local network' : 'Internet'}
+      <Icon name={pending ? 'retry' : local ? 'wifi' : 'globe'} size={13} />
+      {label}
     </span>
   )
 }

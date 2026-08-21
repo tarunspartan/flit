@@ -9,8 +9,10 @@ import {AppError, friendly, toAppError} from '../core/errors.ts'
 import {ChunkTreeHasher} from '../integrity/hash.ts'
 import {message, type ControlMessage, type TransferOffer} from '../protocol/messages.ts'
 import {
+  canChooseLocation,
   createReceiverStore,
   triggerDownload,
+  usesChosenLocation,
   type ReceiverStore,
   type StoragePreferences
 } from '../storage/index.ts'
@@ -119,7 +121,12 @@ export class ReceiveTransfer {
 
   /** Storage advice shown next to Accept/Reject (§66.9). */
   async prepare(): Promise<void> {
-    this.capacity = await checkCapacity(this.size)
+    // Only judged against the origin quota when the bytes will actually land
+    // there. A file big enough for the save picker streams to real disk, where
+    // the quota means nothing — checking it anyway warned about a 2.6 GB file
+    // against a ~3 GB *browser allowance* on a drive with far more free.
+    const quotaApplies = !usesChosenLocation(this.size, this.#prefs)
+    this.capacity = await checkCapacity(this.size, quotaApplies)
     this.#onChange()
   }
 
@@ -141,6 +148,14 @@ export class ReceiveTransfer {
       )
     } catch (err) {
       const appError = toAppError(err, 'storage-unavailable')
+      // Closing the save dialog means "not this file, not now". It is neither a
+      // failure to report nor a rejection to send the other device: the
+      // transfer stays exactly where it was, so the Download button comes back
+      // and it can be taken later, with a location, or not at all.
+      if (appError.code === 'save-cancelled') {
+        this.#onChange()
+        return
+      }
       await this.#reject(appError.code === 'storage-full' ? 'no-storage' : 'no-storage', appError)
       return
     }
@@ -368,6 +383,22 @@ export class ReceiveTransfer {
     if (this.state === 'RECONNECTING') this.lastActivity = Date.now()
   }
 
+  /**
+   * Forgives time this page was not running.
+   *
+   * The stall watchdog measures wall-clock silence, which is only evidence
+   * about the transfer while the page is actually executing. A phone that
+   * locks, a laptop that sleeps or a backgrounded tab freezes everything —
+   * and on waking, `now - lastActivity` is enormous through no fault of the
+   * link, so the very first tick after resuming condemned a transfer that was
+   * still perfectly alive. Sliding the marker forward gives it the full stall
+   * window to prove itself, starting from when we could observe it again.
+   */
+  creditFrozen(ms: number): void {
+    if (isTerminal(this.state)) return
+    this.lastActivity = Math.min(Date.now(), this.lastActivity + ms)
+  }
+
   checkStall(now = Date.now()): void {
     if (!['TRANSFERRING', 'RECONNECTING', 'VERIFYING'].includes(this.state)) return
     const limit =
@@ -511,14 +542,26 @@ export class ReceiveTransfer {
   #storageWarning(): string | null {
     const capacity = this.capacity
     if (!capacity || this.state !== 'WAITING_FOR_ACCEPT') return null
+    if (capacity.verdict !== 'insufficient' && capacity.verdict !== 'tight') return null
     const free = capacity.available === null ? 'unknown' : formatBytes(capacity.available)
-    if (capacity.verdict === 'insufficient') {
-      return `This device may not have room for this file — about ${free} is available.`
+    const tight = capacity.verdict === 'tight'
+
+    // Named for what the number actually is — the storage this browser allows
+    // this site, not free space on the disk. Calling it "room on this device"
+    // sent people to check a drive that was never the constraint.
+    //
+    // Split by whether anything can be done about it. Where the save picker
+    // exists the ceiling is optional and the message says which setting lifts
+    // it; where it does not, the ceiling is real and pretending otherwise
+    // would send someone hunting for a button that is not there.
+    if (canChooseLocation()) {
+      return tight
+        ? `This will use most of the ${free} of storage this browser allows here. Turn on "Always choose where to save" in Settings to write straight to disk instead.`
+        : `Bigger than the ${free} of storage this browser allows here. Turn on "Always choose where to save" in Settings to write straight to disk instead.`
     }
-    if (capacity.verdict === 'tight') {
-      return `This will use most of the free space on this device (about ${free} available).`
-    }
-    return null
+    return tight
+      ? `This will use most of the ${free} this browser allows this site to store.`
+      : `Bigger than the ${free} this browser allows this site to store, and this browser cannot save straight to disk.`
   }
 
   view(): TransferView {

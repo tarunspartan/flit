@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest'
 import type {Bytes} from '../src/lib/core/bytes.ts'
-import {CHECKPOINT_INTERVAL_BYTES, CHUNK_SIZE, MAX_IN_FLIGHT_CHUNKS} from '../src/lib/core/config.ts'
+import {CHECKPOINT_INTERVAL_BYTES, CHUNK_SIZE, MAX_IN_FLIGHT_CHUNKS, TIMEOUTS} from '../src/lib/core/config.ts'
 import {decodeChunk, encodeChunk} from '../src/lib/protocol/frame.ts'
 import type {ControlMessage, TransferOffer} from '../src/lib/protocol/messages.ts'
 import {parseControl} from '../src/lib/protocol/validate.ts'
@@ -186,6 +186,40 @@ describe('transfer end to end', () => {
     expectSameBytes(new Uint8Array(await blob!.arrayBuffer()), data)
   })
 
+  it('does not count a frozen page as a stalled transfer', async () => {
+    const {file} = makeFile(CHUNK_SIZE * 4)
+    const wire = start(file)
+    await waitFor(() => wire.receiver !== null)
+
+    // Hold the wire open so the transfer stays mid-flight for the whole test.
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    wire.holdChunk = index => (index >= 2 ? gate : Promise.resolve())
+
+    await wire.receiver!.accept()
+    await waitFor(() => wire.receiver!.state === 'TRANSFERRING')
+    const receiver = wire.receiver!
+
+    // A phone that locked for twice the stall window. Wall-clock moved a long
+    // way; nothing in the page ran, so the link proved nothing either way.
+    const frozen = TIMEOUTS.transferStallMs * 2
+    receiver.lastActivity -= frozen
+    receiver.creditFrozen(frozen)
+    receiver.checkStall()
+    expect(receiver.state).toBe('TRANSFERRING')
+
+    // The same silence while the page *was* running is a real stall, and must
+    // still be caught — otherwise the credit would have disarmed the watchdog.
+    receiver.lastActivity -= frozen
+    receiver.checkStall()
+    expect(receiver.state).toBe('FAILED')
+    expect(receiver.error?.code).toBe('transfer-stalled')
+
+    release()
+  })
+
   it('handles an empty file', async () => {
     const {file} = makeFile(0, 'empty.txt')
     const wire = start(file)
@@ -198,8 +232,17 @@ describe('transfer end to end', () => {
   it('resumes from the last checkpoint instead of restarting', async () => {
     // Long enough for a second checkpoint, short enough that the stretch after
     // it is clearly shorter than the stretch before.
-    const chunksPerCheckpoint = CHECKPOINT_INTERVAL_BYTES / CHUNK_SIZE
-    const {file, data} = makeFile(CHUNK_SIZE * (chunksPerCheckpoint + 16))
+    const chunksPerCheckpoint = Math.ceil(CHECKPOINT_INTERVAL_BYTES / CHUNK_SIZE)
+    // Where the stall begins: past the first checkpoint plus a full in-flight
+    // window, so the receiver has certainly acknowledged something by then.
+    const holdFrom = chunksPerCheckpoint + MAX_IN_FLIGHT_CHUNKS
+    // The file has to outlast that point by another checkpoint's worth, or the
+    // sender runs out of file before a second checkpoint arrives and there is
+    // nothing left to cut. Derived from the config rather than a fixed +16:
+    // doubling CHUNK_SIZE halves chunksPerCheckpoint while doubling the
+    // in-flight window, which walked holdFrom exactly onto the last chunk and
+    // the stall never engaged at all.
+    const {file, data} = makeFile(CHUNK_SIZE * (holdFrom + chunksPerCheckpoint + 8))
     const wire = start(file)
 
     await waitFor(() => wire.receiver !== null)
@@ -212,7 +255,6 @@ describe('transfer end to end', () => {
     // silently gambling on. Stalling cannot deadlock: the receiver keeps
     // draining what it already holds, which is what produces the checkpoint.
     // By this index it holds well over the byte interval, so one is guaranteed.
-    const holdFrom = chunksPerCheckpoint + MAX_IN_FLIGHT_CHUNKS
     wire.holdChunk = async index => {
       if (index < holdFrom) return
       // Releasing on disconnect matters as much as the wait: the receiver stops
@@ -250,7 +292,7 @@ describe('transfer end to end', () => {
     expect(cut, 'transfer finished before a checkpoint reached the sender').toBe(true)
     expect(wire.sender!.state).toBe('RECONNECTING')
 
-    const deliveredBeforeDrop = wire.deliveredChunks.length
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
     const resumeFrom = wire.checkpointChunks
     wire.deliveredChunks = []
 
@@ -264,7 +306,18 @@ describe('transfer end to end', () => {
     expect(firstAfterResume).toBeGreaterThan(0)
     // Nothing below the checkpoint is sent twice — that is what a checkpoint is.
     expect(firstAfterResume).toBeGreaterThanOrEqual(resumeFrom)
-    expect(wire.deliveredChunks.length).toBeLessThan(deliveredBeforeDrop)
+    // Resumed rather than restarted, stated as the invariant rather than as
+    // "the second leg is shorter than the first" — that comparison depended on
+    // where the cut landed relative to the file's length and broke as soon as
+    // the chunk size changed, though resume was working perfectly.
+    //
+    // Distinct chunks, not raw sends: a few above the checkpoint legitimately
+    // cross twice, because the sender rewinds its own failed in-flight sends
+    // before the receiver's resume point arrives. §Invariants 1 says duplicates
+    // are safe, so counting them here would have this test contradict the
+    // protocol it is checking — which it did, on 7 runs in 30.
+    const distinctAfterResume = new Set(wire.deliveredChunks).size
+    expect(distinctAfterResume).toBeLessThanOrEqual(totalChunks - resumeFrom)
 
     expectSameBytes(new Uint8Array(await wire.receiver!.received!.arrayBuffer()), data)
   })
