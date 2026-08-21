@@ -25,6 +25,29 @@ export function App() {
 
   return (
     <div className="app">
+      {/* The mark, drawn rather than fetched: it is four vectors, and inlining
+          them lets it take the theme's colours instead of shipping two PNGs.
+          Decorative — everything it could link to is already on this screen. */}
+      <div className="brand" role="img" aria-label="flit">
+        {/* Cropped to the artwork. The installed-app icon draws this on a
+            512 square with wide margins for the OS to round off, so reusing
+            that viewBox left the arrow spanning 150-362 — 41% of the box, and
+            a 7px glyph inside a 32px circle. 124..388 is the mark's own bounds
+            including the miter at the corner and the butt caps. */}
+        <svg viewBox="124 124 264 264" width="13" height="13" aria-hidden="true">
+          <g
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="42"
+            strokeLinecap="butt"
+            strokeLinejoin="miter"
+          >
+            <path d="M150 362 L362 150" />
+            <path d="M256 150 L362 150 L362 256" />
+          </g>
+        </svg>
+      </div>
+
       {/* No nav bar — just the floating controls. */}
       <div className="fabs">
         {state.peers.length > 0 && (
