@@ -532,6 +532,12 @@ button {
  * enough to drop it to 3.46:1. Soft on a 5% tint holds at 4.87:1 across every
  * surface this lands on, in both themes, and is still a clear step below the
  * device name beside it. */
+/*
+ * Set as a label — monospaced, uppercase, tracked — like every other reading in
+ * the interface. Both sides of the branch merge added to this rule, the pill
+ * shape from one and the label type from the other, which left `font-size`
+ * declared twice. 11px is the size the rest of the type system uses.
+ */
 .pathcost {
   display: inline-flex;
   align-items: center;
@@ -541,7 +547,6 @@ button {
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 5%, transparent);
   color: var(--text-soft);
-  font-size: 11.5px;
   white-space: nowrap;
   font-family: var(--mono);
   font-size: 11px;
@@ -1511,6 +1516,22 @@ button {
 .row--peer .row__bar {
   flex: 1;
   width: auto;
+}
+
+/*
+ * Keeps the state in one column whether or not the row has a bar.
+ *
+ * The bar is the only flexible thing on a peer line, so a row without one —
+ * every terminal state: cancelled, completed, failed, declined — had nothing to
+ * absorb the slack and collapsed against the name. Three devices on one file
+ * put their states at three different x positions, none of them the column the
+ * transferring row used.
+ *
+ * On a row that does have a bar this changes nothing: the bar has already taken
+ * the free space, so there is none left for the margin to claim.
+ */
+.row--peer .row__state {
+  margin-left: auto;
 }
 
 /* ------------------------------------------------------------- incoming */

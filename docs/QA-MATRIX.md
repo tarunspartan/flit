@@ -160,6 +160,7 @@ npm run typecheck && npm test && npm run build
 | Four devices in a room | Peer lines read Mac / Mac 2 / Mac 3 — no two devices share a label | ☐ |
 | Four devices, phone width | No horizontal overflow; no state or percentage clipped | ☐ |
 | Multi-device shared card | One line per device, names and states in aligned columns | ☐ |
+| Mixed states on one file | A cancelled line's state sits in the same column as a transferring one's | ☐ |
 | Queued label | Reads "Queued" with no position number | ☐ |
 | Download button | Outlined, not filled; hover fills with the soft tint | ☐ |
 | Path on an offer | "Local network" or "Internet" shows before you accept, not only during | ☐ |
