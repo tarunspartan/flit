@@ -104,6 +104,24 @@ If the connection drops *after* every chunk was sent, the sender re-sends `TRANS
 reconnect and the receiver answers idempotently — with the stored verdict if it already verified,
 or with a fresh `TRANSFER_ACCEPT` if chunks are actually missing.
 
+### Either end may restart it
+
+A drop is routinely noticed by only one side. The other's peer connection can sit there looking
+healthy for a long time, and if that side is the sender, it never sends `TRANSFER_RESUME` — so a
+protocol where only the sender restarts a transfer deadlocks: both ends wait, and the one that
+knows something is wrong is not allowed to say so.
+
+So the end that noticed speaks. The sender sends `TRANSFER_RESUME` when it saw the drop; the
+receiver sends `TRANSFER_ACCEPT{fromChunk}` when it did. That message is the whole negotiation —
+it is what the sender acts on either way — so no new message type is needed. If both ends noticed,
+the sender simply receives it twice and treats the second identically to the first: rewind to that
+chunk and pump. Invariant 1 covers it.
+
+The reconnect window is measured from the **first** drop, not from the last sign of life. A peer
+that flaps would otherwise refresh the clock on every reappearance and hold a transfer open forever
+instead of failing it. The clock is cleared by a chunk actually arriving — asking to resume is not
+evidence the link works, because the request itself can fail into a dead link.
+
 ---
 
 ## Invariants

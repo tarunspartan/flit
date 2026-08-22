@@ -6,6 +6,7 @@ import {deriveRoomTopic} from '../core/ids.ts'
 import {classifyPath, steadyPath} from './pathClassifier.ts'
 import {resolveIceServers} from './iceServers.ts'
 import {
+  deadLinks,
   UNKNOWN_PATH,
   type NetworkPath,
   type PeerId,
@@ -116,6 +117,7 @@ export class TrysteroTransport implements Transport {
     this.#sendControl = null
     this.#sendChunk = null
     this.#paths.clear()
+    this.#reportedGone.clear()
     this.#emitter.clear()
     if (room) await room.leave().catch(() => {})
   }
@@ -164,6 +166,9 @@ export class TrysteroTransport implements Transport {
     return this.#room?.getPeers()[peerId] ?? null
   }
 
+  /** Links already announced as gone, so a dead one is reported once. */
+  #reportedGone = new Set<PeerId>()
+
   #startPolling(): void {
     this.#pathTimer ??= setInterval(() => void this.#pollPaths(), PATH_POLL_MS)
   }
@@ -179,7 +184,11 @@ export class TrysteroTransport implements Transport {
     const room = this.#room
     if (!room) return
 
-    for (const [peerId, connection] of Object.entries(room.getPeers())) {
+    const peers = room.getPeers()
+    this.#reapDeadLinks(peers)
+
+    for (const [peerId, connection] of Object.entries(peers)) {
+      if (this.#reportedGone.has(peerId)) continue
       const previous = this.#paths.get(peerId)
       const path = steadyPath(previous, await classifyPath(connection))
       this.#paths.set(peerId, path)
@@ -188,6 +197,20 @@ export class TrysteroTransport implements Transport {
       if (!previous || previous.kind !== path.kind || previous.network !== path.network) {
         this.#emitter.emit('path', {peerId, path})
       }
+    }
+  }
+
+  /**
+   * Announces links that died without anyone telling us. The decision is
+   * `deadLinks`; this owns the polling, the bookkeeping and the emitting.
+   */
+  #reapDeadLinks(peers: Record<string, RTCPeerConnection>): void {
+    const states = new Map(
+      Object.entries(peers).map(([peerId, connection]) => [peerId, connection.connectionState])
+    )
+    for (const peerId of deadLinks(states, this.#reportedGone)) {
+      this.#paths.delete(peerId)
+      this.#emitter.emit('peerLeave', {peerId})
     }
   }
 }

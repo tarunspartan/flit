@@ -77,7 +77,7 @@ export function Sidebar({state, onClose}: {state: SessionSnapshot; onClose: () =
         </header>
 
         {tab === 'settings' ? (
-          <Settings state={state} onJoined={dismiss} />
+          <Settings state={state} onDone={dismiss} />
         ) : (
           <About state={state} />
         )}
@@ -155,9 +155,14 @@ function About({state}: {state: SessionSnapshot}) {
   )
 }
 
-function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => void}) {
+function Settings({state, onDone}: {state: SessionSnapshot; onDone: () => void}) {
   const [theme, setTheme] = useTheme()
   const [name, setName] = useState(state.selfName)
+  // Ending the room cannot be undone — the code stops working for every device,
+  // including the ones mid-transfer. It is the only control here that asks
+  // twice; cancelling a transfer or unsharing a file can simply be done again,
+  // and confirming those would only teach people to dismiss confirmations.
+  const [confirmEnd, setConfirmEnd] = useState(false)
 
   return (
     <div className="panel">
@@ -165,6 +170,10 @@ function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => vo
         <span className="field__label">Device name</span>
         <input
           className="field__input"
+          name="deviceName"
+          // Not an identity field, so keep password managers away from it.
+          autoComplete="off"
+          spellCheck={false}
           value={name}
           maxLength={32}
           onChange={event => setName(event.target.value)}
@@ -192,7 +201,7 @@ function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => vo
         </div>
       </div>
 
-      <JoinByCode onJoined={onJoined} />
+      <JoinByCode onJoined={onDone} />
 
       <label className="toggle">
         <input
@@ -238,12 +247,32 @@ function Settings({state, onJoined}: {state: SessionSnapshot; onJoined: () => vo
         </span>
       </label>
 
+      {/*
+        Disconnecting is a fresh start, not a dead end. Ending the room and
+        opening the next one are one action here, so the sidebar button *is* the
+        restart — the alternative left the app sitting on a screen whose only
+        purpose was a button that did exactly this, which is a click asking the
+        user to confirm something they already said.
+
+        The sheet closes first so the new code is what appears behind it.
+      */}
       <button
         type="button"
-        className="button button--danger"
-        onClick={() => void session.endSession()}
+        className={`button button--danger ${confirmEnd ? 'button--armed' : ''}`}
+        onClick={() => {
+          if (!confirmEnd) {
+            setConfirmEnd(true)
+            return
+          }
+          onDone()
+          void (async () => {
+            await session.endSession()
+            await session.openRoom()
+          })()
+        }}
+        onBlur={() => setConfirmEnd(false)}
       >
-        Disconnect everything
+        {confirmEnd ? 'Confirm — this ends the room for every device' : 'Disconnect everything'}
       </button>
     </div>
   )

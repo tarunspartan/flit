@@ -4,6 +4,7 @@ import type {SharedFileView, TransferView} from '../../lib/transfer/states.ts'
 import {isMoving, isQueued, isTerminal} from '../../lib/transfer/states.ts'
 import {formatBytes, formatDuration, formatPercent, formatSpeed} from '../../lib/utils/format.ts'
 import {session} from '../store.ts'
+import {showsPathCost} from '../../lib/transport/pathClassifier.ts'
 import {Icon, PathBadge, PathCost, ProgressBar, type IconName} from './common.tsx'
 
 const STATE_LABEL: Record<TransferView['state'], string> = {
@@ -195,7 +196,7 @@ export function IncomingFile({transfer, kind}: {transfer: TransferView; kind: Pa
             <span className="meta__field">{formatBytes(transfer.size)}</span>
             <span className="dot">·</span>
             <span className="meta__field">from {transfer.peerName}</span>
-            {kind && (
+            {showsPathCost(kind) && (
               <>
                 <span className="dot">·</span>
                 <PathCost kind={kind} />

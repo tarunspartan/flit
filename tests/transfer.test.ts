@@ -1,6 +1,11 @@
 import {describe, expect, it} from 'vitest'
 import type {Bytes} from '../src/lib/core/bytes.ts'
-import {CHECKPOINT_INTERVAL_BYTES, CHUNK_SIZE, MAX_IN_FLIGHT_CHUNKS} from '../src/lib/core/config.ts'
+import {
+  CHECKPOINT_INTERVAL_BYTES,
+  CHUNK_SIZE,
+  MAX_IN_FLIGHT_CHUNKS,
+  TIMEOUTS
+} from '../src/lib/core/config.ts'
 import {decodeChunk, encodeChunk} from '../src/lib/protocol/frame.ts'
 import type {ControlMessage, TransferOffer} from '../src/lib/protocol/messages.ts'
 import {parseControl} from '../src/lib/protocol/validate.ts'
@@ -122,6 +127,26 @@ class Wire {
     this.connected = true
     this.receiver?.onPeerRestored()
     this.sender?.onPeerRestored()
+  }
+
+  /**
+   * The link drops for real, but only the receiver is *told* about it.
+   *
+   * The sender still works it out for itself — its in-flight sends fail and it
+   * rewinds into RECONNECTING — but it never gets the `onPeerRestored` callback
+   * that would make it renegotiate, because nothing above its transport noticed
+   * the peer go and come back. That asymmetry is the deadlock: both ends are
+   * waiting, and under the old protocol only the sender was allowed to break
+   * the tie.
+   */
+  dropTellingOnlyReceiver(): void {
+    this.connected = false
+    this.receiver?.onPeerLost()
+  }
+
+  restoreTellingOnlyReceiver(): void {
+    this.connected = true
+    this.receiver?.onPeerRestored()
   }
 }
 
@@ -267,6 +292,70 @@ describe('transfer end to end', () => {
     expect(wire.deliveredChunks.length).toBeLessThan(deliveredBeforeDrop)
 
     expectSameBytes(new Uint8Array(await wire.receiver!.received!.arrayBuffer()), data)
+  })
+
+  it('lets the receiver restart a transfer the sender was never told had dropped', async () => {
+    // Comfortably more chunks than the in-flight window, so the sender is
+    // genuinely mid-stream when the link goes rather than already drained.
+    const {file, data} = makeFile(CHUNK_SIZE * (MAX_IN_FLIGHT_CHUNKS * 4))
+    const wire = start(file)
+    await waitFor(() => wire.receiver !== null)
+
+    // Throttle so the sender cannot empty the file before the cut. Released on
+    // disconnect, or the parked chunk would wait forever and the in-flight
+    // window would never fail.
+    wire.holdChunk = async index => {
+      if (index < MAX_IN_FLIGHT_CHUNKS) return
+      await waitFor(() => !wire.connected, 5_000)
+    }
+
+    await wire.receiver!.accept()
+    await waitFor(() => wire.deliveredChunks.length >= 2)
+
+    wire.dropTellingOnlyReceiver()
+    await waitFor(() => wire.receiver!.state === 'RECONNECTING')
+    await waitFor(() => wire.sender!.state === 'RECONNECTING')
+
+    // Both ends are stalled, and the sender will never be told the peer is
+    // back. Under the old protocol that deadlocked: the sender drove resume,
+    // so nobody sent TRANSFER_RESUME and the receiver waited for a message
+    // that could not arrive. The receiver's own checkpoint has to restart it.
+    wire.holdChunk = null
+    wire.restoreTellingOnlyReceiver()
+    await waitFor(() => wire.sender!.state === 'COMPLETED' && wire.receiver!.state === 'COMPLETED')
+
+    expect(wire.receiver!.verified).toBe(true)
+    expectSameBytes(new Uint8Array(await wire.receiver!.received!.arrayBuffer()), data)
+  })
+
+  it('bounds a reconnect from the first drop, however often the peer flaps', async () => {
+    const {file} = makeFile(CHUNK_SIZE * 4)
+    const wire = start(file)
+    await waitFor(() => wire.receiver !== null)
+    await wire.receiver!.accept()
+    await waitFor(() => wire.deliveredChunks.length >= 1)
+
+    const receiver = wire.receiver!
+    // Nothing reaches the receiver from here on, so no bounce ever produces bytes.
+    wire.onChunk = () => null
+    const firstDrop = Date.now()
+    receiver.onPeerLost()
+    expect(receiver.state).toBe('RECONNECTING')
+
+    // The peer reappears and vanishes repeatedly. Every reappearance used to
+    // refresh lastActivity, which the reconnect window was measured from — so
+    // a flapping peer reset the clock forever and the transfer hung in
+    // RECONNECTING instead of failing.
+    for (let i = 1; i <= 5; i++) {
+      receiver.onPeerRestored()
+      await tick()
+      receiver.onPeerLost()
+      receiver.checkStall(firstDrop + i * 1000)
+      expect(receiver.state, `gave up early on bounce ${i}`).toBe('RECONNECTING')
+    }
+
+    receiver.checkStall(firstDrop + TIMEOUTS.reconnectWindowMs + 1)
+    expect(receiver.state).toBe('FAILED')
   })
 
   it('survives duplicated chunks without corrupting the file', async () => {

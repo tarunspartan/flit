@@ -8,7 +8,8 @@ import {canTransition, isTerminal} from '../src/lib/transfer/states.ts'
 import {FlowController} from '../src/lib/transfer/FlowController.ts'
 import {sanitizeFilename, sanitizeRelativePath, uniqueFilename} from '../src/lib/utils/filename.ts'
 import {SpeedMeter} from '../src/lib/utils/speed.ts'
-import {agreeKind, bandwidthCost, classifyPath, isPrivate, sameSubnet, steadyPath} from '../src/lib/transport/pathClassifier.ts'
+import {agreeKind, bandwidthCost, classifyPath, isPrivate, sameSubnet, showsPathCost, steadyPath} from '../src/lib/transport/pathClassifier.ts'
+import {deadLinks, PATH_KINDS} from '../src/lib/transport/Transport.ts'
 import {formatBytes, formatDuration} from '../src/lib/utils/format.ts'
 import {takeSharedFiles} from '../src/lib/utils/shareTarget.ts'
 
@@ -585,19 +586,87 @@ describe('files arriving from the OS share sheet', () => {
   })
 })
 
+describe('noticing a link die without being told', () => {
+  const states = (entries: Record<string, RTCPeerConnectionState | undefined>) =>
+    new Map(Object.entries(entries))
+
+  it('reports a connection that will never come back', () => {
+    const reported = new Set<string>()
+    expect(deadLinks(states({a: 'failed', b: 'connected'}), reported)).toEqual(['a'])
+  })
+
+  it('leaves a transient blip alone', () => {
+    // 'disconnected' routinely recovers on its own; treating it as gone would
+    // tear down healthy transfers on every hiccup.
+    const reported = new Set<string>()
+    expect(deadLinks(states({a: 'disconnected'}), reported)).toEqual([])
+  })
+
+  it('never reports a peer merely absent from the room map', () => {
+    // Regression: absence used to count as death, which raced with joining —
+    // a peer is polled the moment it is added locally, before Trystero's map
+    // has caught up, and a brand-new peer was reported dead on arrival. Only
+    // the connection's own terminal state counts now.
+    const reported = new Set<string>()
+    expect(deadLinks(states({}), reported)).toEqual([])
+    expect(deadLinks(states({fresh: undefined}), reported)).toEqual([])
+    expect(deadLinks(states({fresh: 'connecting'}), reported)).toEqual([])
+    expect(deadLinks(states({fresh: 'new'}), reported)).toEqual([])
+  })
+
+  it('announces each death once, not once per poll', () => {
+    const reported = new Set<string>()
+    const dead = states({a: 'failed'})
+    expect(deadLinks(dead, reported)).toEqual(['a'])
+    expect(deadLinks(dead, reported)).toEqual([])
+    expect(deadLinks(dead, reported)).toEqual([])
+  })
+
+  it('can report a peer that came back and died again', () => {
+    const reported = new Set<string>()
+    expect(deadLinks(states({a: 'failed'}), reported)).toEqual(['a'])
+    expect(deadLinks(states({a: 'connected'}), reported)).toEqual([])
+    expect(deadLinks(states({a: 'closed'}), reported)).toEqual(['a'])
+  })
+})
+
+describe('path cost visibility', () => {
+  // Regression: the separator dot in front of PathCost was guarded on the kind
+  // being truthy, but 'unknown' is a truthy kind that PathCost draws nothing
+  // for. The moment a peer dropped, every meta line grew a dangling "·".
+  it('is shown only for a kind that has a cost to state', () => {
+    expect(showsPathCost('local')).toBe(true)
+    expect(showsPathCost('direct')).toBe(true)
+    expect(showsPathCost('relay')).toBe(true)
+    expect(showsPathCost('unknown')).toBe(false)
+    expect(showsPathCost(undefined)).toBe(false)
+  })
+
+  it('agrees with what PathCost actually renders', () => {
+    for (const kind of PATH_KINDS) {
+      expect(showsPathCost(kind)).toBe(bandwidthCost(kind) !== null)
+    }
+  })
+})
+
 describe('formatting', () => {
-  it('formats byte sizes', () => {
-    expect(formatBytes(0)).toBe('0 B')
-    expect(formatBytes(999)).toBe('999 B')
-    expect(formatBytes(1024)).toBe('1.00 KB')
-    expect(formatBytes(1.8 * 1024 ** 3)).toBe('1.80 GB')
+  // A value and its unit are joined by a non-breaking space so they never wrap
+  // apart. Spelled out here rather than typed literally, because the difference
+  // between the two spaces is invisible in a diff.
+  const NBSP = '\u00a0'
+
+  it('formats byte sizes, keeping the unit with the number', () => {
+    expect(formatBytes(0)).toBe(`0${NBSP}B`)
+    expect(formatBytes(999)).toBe(`999${NBSP}B`)
+    expect(formatBytes(1024)).toBe(`1.00${NBSP}KB`)
+    expect(formatBytes(1.8 * 1024 ** 3)).toBe(`1.80${NBSP}GB`)
   })
 
   it('avoids misleading countdowns', () => {
     expect(formatDuration(null)).toBe('Calculating…')
     expect(formatDuration(0.4)).toBe('less than a second')
-    expect(formatDuration(90)).toBe('1 min 30 sec')
-    expect(formatDuration(7200)).toBe('2 hr')
+    expect(formatDuration(90)).toBe(`1${NBSP}min 30${NBSP}sec`)
+    expect(formatDuration(7200)).toBe(`2${NBSP}hr`)
   })
 })
 

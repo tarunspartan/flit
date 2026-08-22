@@ -49,6 +49,14 @@ export class SendTransfer {
   verified = false
   lastActivity = Date.now()
 
+  /**
+   * When the peer was *first* seen to go, cleared once the transfer restarts.
+   * The reconnect window is measured from here rather than from `lastActivity`,
+   * which every reappearance refreshed — a flapping peer could otherwise hold
+   * the transfer in RECONNECTING indefinitely instead of failing.
+   */
+  #lostAt: number | null = null
+
   #link: PeerLink
   #onChange: () => void
   #hasher: ChunkTreeHasher
@@ -184,6 +192,8 @@ export class SendTransfer {
     this.#announced = false
     this.#pausedByPeer = false
     this.#speed.reset()
+    // Bytes are flowing again, so the reconnect clock starts fresh next time.
+    this.#lostAt = null
     this.startedAt ??= Date.now()
     this.#transition('TRANSFERRING')
     this.#signal()
@@ -225,6 +235,7 @@ export class SendTransfer {
     if (isTerminal(this.state) || this.state === 'QUEUED') return
     this.#pausedByPeer = false
     this.#speed.reset()
+    this.#lostAt ??= Date.now()
     // Reachable from VERIFYING too: a drop between "all sent" and the verdict
     // must not strand the transfer.
     this.#transition('RECONNECTING')
@@ -263,10 +274,13 @@ export class SendTransfer {
   checkStall(now = Date.now()): void {
     // VERIFYING is included: waiting forever for a verdict is also a stall.
     if (!['TRANSFERRING', 'RECONNECTING', 'VERIFYING'].includes(this.state)) return
-    const limit =
-      this.state === 'RECONNECTING' ? TIMEOUTS.reconnectWindowMs : TIMEOUTS.transferStallMs
-    if (now - this.lastActivity > limit) {
-      this.#fail(new AppError(this.state === 'RECONNECTING' ? 'connection-lost' : 'transfer-stalled'))
+    const reconnecting = this.state === 'RECONNECTING'
+    const limit = reconnecting ? TIMEOUTS.reconnectWindowMs : TIMEOUTS.transferStallMs
+    // While reconnecting, measure from the first drop rather than the last sign
+    // of life, so a flapping peer cannot hold the transfer open forever.
+    const since = reconnecting ? (this.#lostAt ?? this.lastActivity) : this.lastActivity
+    if (now - since > limit) {
+      this.#fail(new AppError(reconnecting ? 'connection-lost' : 'transfer-stalled'))
     }
   }
 

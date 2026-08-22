@@ -30,7 +30,7 @@ on a device on the same Wi-Fi — `npm run dev` binds to `0.0.0.0` precisely so 
 
 ```bash
 npm run build        # typecheck + production bundle in dist/
-npm test             # 62 unit + end-to-end protocol tests
+npm test             # 89 unit, session and end-to-end protocol tests
 npm run typecheck
 ```
 
@@ -47,7 +47,7 @@ keep running.
 | **Pairing** | Zero clicks — a room exists on load. QR-first, with a 12-symbol code as fallback. |
 | **Group rooms** | Up to 8 devices. Everyone can send, everyone can download, all at once. |
 | **Share first, connect later** | Files belong to the *room*. Drop them now; devices that join afterwards are offered them automatically. |
-| **Transport** | WebRTC DataChannel via [Trystero](https://github.com/dmotz/trystero). Direct local or direct internet, classified from the real ICE candidate pair. |
+| **Transport** | WebRTC DataChannel via [Trystero](https://github.com/dmotz/trystero). Direct local or direct internet, classified from the real ICE candidate pair and drawn as a line across the top of the screen. |
 | **Large files** | Streamed in 256 KiB chunks with backpressure on both ends. A 5 GB file never has to fit in memory on either device. |
 | **Integrity** | Every chunk is SHA-256'd; the file hash is the hash of those digests. A file that fails verification is never handed to the user. |
 | **Resume** | The receiver checkpoints durable progress. After a connection drop the sender restarts from that checkpoint, not from zero. |
@@ -131,6 +131,28 @@ src/lib/
 
 Resume logic lives inside `SendTransfer`/`ReceiveTransfer` rather than a separate `ResumeManager`
 class — checkpoint state is meaningless apart from the transfer that owns it.
+
+### Two adapters, or it isn't a seam
+
+Nothing above `Transport` knows about SDP, ICE or Trystero — but for a while that was a claim
+rather than a fact, because `SessionManager` built its own `TrysteroTransport` inside itself. One
+implementation means the interface is never actually exercised as an interface, and it meant the
+largest file in the repo, holding room lifetime, peer trust, reconnect and signaling health, could
+only be run against real WebRTC and live relays. So it was never run at all.
+
+`SessionManager` now takes a factory, defaulting to the real one, and
+[`MemoryTransport`](src/lib/transport/MemoryTransport.ts) is the second adapter: two of them on one
+`MemoryNetwork` genuinely deliver to each other, so two sessions hold a real conversation in a test
+with no network. Control messages are round-tripped through JSON and delivery is asynchronous,
+because that is what the wire does.
+
+This is the shape `TransferManager` already had — it takes `linkFor` rather than building links,
+`PeerLink` has had two adapters from the start, and that is exactly why the transfer protocol is
+the best-tested code here. The same move, one seam up.
+
+`signalingReady()` moved onto the `Transport` interface as part of it. It was being called on the
+concrete class, which is what forced the field to be typed to `TrysteroTransport` and kept the
+whole module off its own seam.
 
 ### Files belong to the room, not to a device
 
@@ -276,26 +298,94 @@ when the tab comes back, but it will not claim a transfer continues while the sc
 
 ---
 
-## Colour and motion
+## Design
+
+### The route
+
+The first thing on the screen is the line to every device you are connected to:
+
+```
+MAC
+ │───────────────────────────────────────●  THINKPAD
+ ●╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌●  PIXEL 8
+ │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◆╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌●  IPHONE
+              1 LOCAL · 1 INTERNET · 1 RELAYED
+```
+
+Each leg's texture *is* that link's classification, so there is no legend to learn:
+
+| Leg | Meaning |
+|---|---|
+| Unbroken | Your own network. Nothing is in the middle of it, so nothing interrupts it. |
+| Dashed | The internet, still directly between the two devices. |
+| Dashed with a marker mid-line | A relay — a server in your file's path, drawn in the middle of the path. |
+| Faint dots, hollow far end | Nobody there yet, or a device that has dropped. |
+
+A room holds eight devices and [the protocol is strictly pairwise](docs/PROTOCOL.md), so from your
+device's seat the shape is a hub with independent spokes — never a chain or a shared bus. One leg
+per device is the only honest drawing of that, and it is what makes the case that matters visible
+rather than checkable: **the laptop on your Wi-Fi and the phone on mobile data**, where the same
+file costs two very different things. A single line averaging them could only ever have been a
+guess.
+
+Which way a file travels is this project's trust signal, and it used to be a badge inside a popover
+nobody opens. Putting it at the top answers "where is my file going?" before you have sent
+anything, and tapping it opens the roster.
+
+Two things fold as the room fills. Up to three devices, each leg carries its name and the header
+stays quiet; past three the names move into the roster and the header takes over the count, because
+the names are what stop fitting — the legs still do. And when the links disagree, the line beneath
+them counts rather than summarises: `2 local · 1 internet` is the shape of the difference, where
+"several devices" was only ever the fact of one.
+
+### Colour
 
 One accent token drives the primary action, the progress fill, incoming chips, focus rings and
 links. It is a deep ocean blue at OKLCH hue 245, and it sits 87° clear of the nearest status colour
 (`--ok` at 158°) — green, amber and red are already spoken for by `--ok`, `--warn`/`--relay` and
 `--danger`, so an accent in one of those would make "do this" and "this finished" the same colour.
 
+The neutrals are that same hue 245 held under 0.03 chroma rather than being true greys, so the
+ground the app sits on is a desaturated version of its own accent. Enough to feel on a full-screen
+field, not enough to read as a blue theme.
+
 The primary action is outlined rather than filled — border and label in the accent, soft tint on
 hover. A solid block of accent sat next to a progress bar in the same colour, and the two competed
 for the same glance.
 
-Every foreground clears **WCAG 2.1 AA** against the darkest surface it can land on: 4.5:1 for text,
-3:1 for controls and focus rings under SC 1.4.11. The light values were derived by holding each
-colour's OKLCH hue and chroma and lowering only its lightness, so the palette keeps its hue
-relationships rather than being re-picked by eye. Both themes are checked, 24 pairings each.
+Every foreground clears **WCAG 2.1 AA** against the darkest surface it can land on: 4.5:1 for text.
+Both palettes were derived rather than picked — hue and chroma held, lightness moved — and every
+pairing was then measured against the previous values so a recut could not quietly cost contrast.
+The two faintest text tiers gained from the last one: `--text-faint` went from 4.19 to 4.71 on dark
+`--surface-2`, the tightest pairing in the app. Hairline borders sit below the 3:1 of SC 1.4.11 and
+always have; the controls they outline are identified by their labels rather than their edges.
 
-`prefers-reduced-motion: reduce` removes movement and keeps colour: the progress bar stops
-animating its width, chevrons stop rotating, buttons keep their hover colour but lose the 1px press
-travel, and the sheet and popover fade in place instead of travelling. Nothing is removed outright —
-an element that simply appeared with no transition would be its own kind of jarring.
+### Type
+
+Three roles, and only one of them is prose.
+
+| Role | Face | Where |
+|---|---|---|
+| Prose | System sans | Filenames, buttons, banners, settings — anything that is language |
+| Readout | `--mono`, tabular | Sizes, speeds, states, meta lines — so a column of cards has its numbers in a column too |
+| Label | `--mono`, uppercase, tracked | Section eyebrows, path badges, the route's ends and state |
+
+The split is the point: a filename is a name, `879 KB` is a measurement, and `SHARING 3` is an
+instrument label. The pairing code is the specimen the rest is tuned against. No webfonts —
+[PRIVACY.md](PRIVACY.md) promises the only requests this app makes are to the signaling relay and
+STUN, and the app has to work offline once installed. A font CDN would break both.
+
+### Motion
+
+One animation: the route's dashes travel while there is genuinely something in progress — looking
+for a device, or looking for one again — and stop the moment a device lands. Movement means "still
+searching" rather than "this app has animations".
+
+`prefers-reduced-motion: reduce` removes movement and keeps colour: the dashes stop travelling but
+keep their pattern, which is what carries the meaning; the progress bar stops animating its width;
+chevrons stop rotating; buttons keep their hover colour but lose the 1px press travel; and the sheet
+and popover fade in place instead of travelling. Nothing is removed outright — an element that
+simply appeared with no transition would be its own kind of jarring.
 
 ## Security & privacy
 
@@ -324,6 +414,12 @@ npm test
 `tests/units.test.ts` covers the parts where a bug is silent: filename sanitizing (path traversal,
 bidi overrides, reserved names, byte-length truncation), code normalization, frame decoding,
 protocol validation, chunk-tree hashing, the state machine, flow control, and speed smoothing.
+
+`tests/session.test.ts` runs real `SessionManager`s against an in-memory `Transport`: room
+lifetime, the roster, link classification, the reconnect window, and the signaling health states.
+That file exists because `Transport` has a second adapter — see [Two adapters, or it isn't a
+seam](#two-adapters-or-it-isnt-a-seam). Timers are faked throughout, so a six-hour room expiry is
+a millisecond test.
 
 `tests/transfer.test.ts` runs a real `SendTransfer` against a real `ReceiveTransfer` over a
 simulated link — control messages are JSON round-tripped through the validator and chunks are
