@@ -271,6 +271,22 @@ export class SendTransfer {
     }
   }
 
+  /**
+   * Forgives time this page was not running.
+   *
+   * The stall watchdog measures wall-clock silence, which is only evidence
+   * about the transfer while the page is actually executing. A phone that
+   * locks, a laptop that sleeps or a backgrounded tab freezes everything —
+   * and on waking, `now - lastActivity` is enormous through no fault of the
+   * link, so the very first tick after resuming condemned a transfer that was
+   * still perfectly alive. Sliding the marker forward gives it the full stall
+   * window to prove itself, starting from when we could observe it again.
+   */
+  creditFrozen(ms: number): void {
+    if (isTerminal(this.state)) return
+    this.lastActivity = Math.min(Date.now(), this.lastActivity + ms)
+  }
+
   checkStall(now = Date.now()): void {
     // VERIFYING is included: waiting forever for a verdict is also a stall.
     if (!['TRANSFERRING', 'RECONNECTING', 'VERIFYING'].includes(this.state)) return

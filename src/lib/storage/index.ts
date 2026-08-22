@@ -15,6 +15,32 @@ export interface StoragePreferences {
 }
 
 /**
+ * Whether a file this size will be written to a location the user picks rather
+ * than into this origin's storage bucket.
+ *
+ * Exported because the capacity advice shown *before* accepting has to make the
+ * same call the store makes afterwards. `navigator.storage.estimate()` reports
+ * an origin quota, not free disk, and a file streamed to a chosen location
+ * never touches that quota — so judging one against it produced "This device
+ * may not have room" for a file on a disk with plenty of room to spare.
+ */
+/**
+ * Whether this browser can write a download straight to a location the user
+ * picks, bypassing the origin's storage allowance altogether.
+ *
+ * False on Firefox, on iOS, and on Android Chrome — there the allowance is a
+ * real ceiling on what can be received, and advice to "save it to disk
+ * instead" would be advice to press a button that does not exist.
+ */
+export function canChooseLocation(): boolean {
+  return FileSystemStore.supported()
+}
+
+export function usesChosenLocation(size: number, prefs: StoragePreferences): boolean {
+  return FileSystemStore.supported() && (prefs.alwaysChooseLocation || size >= PICKER_MIN_BYTES)
+}
+
+/**
  * Picks the best available tier (§78):
  *   1. user-chosen location  — one write, no quota, best for huge files
  *   2. OPFS                  — off-main-thread, bounded RAM, then download
@@ -24,10 +50,7 @@ export async function createReceiverStore(
   request: StoreRequest,
   prefs: StoragePreferences = {alwaysChooseLocation: false}
 ): Promise<ReceiverStore> {
-  const wantsPicker =
-    request.allowPicker &&
-    FileSystemStore.supported() &&
-    (prefs.alwaysChooseLocation || request.size >= PICKER_MIN_BYTES)
+  const wantsPicker = request.allowPicker && usesChosenLocation(request.size, prefs)
 
   if (wantsPicker) {
     // Returns null if the user dismisses the dialog: they accepted the

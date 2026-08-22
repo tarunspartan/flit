@@ -44,8 +44,14 @@ export class FileSystemStore implements ReceiverStore {
           : undefined
       })
     } catch (err) {
-      // AbortError means "I'd rather not choose a location" — not a failure.
-      if (err instanceof DOMException && err.name === 'AbortError') return null
+      // AbortError is the person closing the dialog. That is a decision, not a
+      // failure, and it has to travel: swallowing it here made "Cancel" fall
+      // through to browser storage and download the file anyway — the opposite
+      // of what the button said. Anything else really is a failure, and falling
+      // back to another tier is the right answer for those.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new AppError('save-cancelled', 'the save dialog was dismissed', {cause: err})
+      }
       return null
     }
 

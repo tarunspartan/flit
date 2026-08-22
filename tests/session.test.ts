@@ -49,8 +49,11 @@ function track(session: SessionManager): SessionManager {
 
 beforeEach(() => vi.useFakeTimers())
 
-afterEach(async () => {
-  for (const session of live.splice(0)) await session.endSession()
+afterEach(() => {
+  // No public shutdown to call: `endSession` became `restart`, which would open
+  // a fresh room rather than close this one. Everything a session holds while
+  // these tests run is a fake timer, and dropping the fake clock discards them.
+  live.splice(0)
   vi.useRealTimers()
 })
 

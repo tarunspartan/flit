@@ -77,7 +77,7 @@ export function Sidebar({state, onClose}: {state: SessionSnapshot; onClose: () =
         </header>
 
         {tab === 'settings' ? (
-          <Settings state={state} onDone={dismiss} />
+          <Settings state={state} onDismiss={dismiss} />
         ) : (
           <About state={state} />
         )}
@@ -155,14 +155,9 @@ function About({state}: {state: SessionSnapshot}) {
   )
 }
 
-function Settings({state, onDone}: {state: SessionSnapshot; onDone: () => void}) {
+function Settings({state, onDismiss}: {state: SessionSnapshot; onDismiss: () => void}) {
   const [theme, setTheme] = useTheme()
   const [name, setName] = useState(state.selfName)
-  // Ending the room cannot be undone — the code stops working for every device,
-  // including the ones mid-transfer. It is the only control here that asks
-  // twice; cancelling a transfer or unsharing a file can simply be done again,
-  // and confirming those would only teach people to dismiss confirmations.
-  const [confirmEnd, setConfirmEnd] = useState(false)
 
   return (
     <div className="panel">
@@ -201,7 +196,7 @@ function Settings({state, onDone}: {state: SessionSnapshot; onDone: () => void})
         </div>
       </div>
 
-      <JoinByCode onJoined={onDone} />
+      <JoinByCode onJoined={onDismiss} />
 
       <label className="toggle">
         <input
@@ -247,33 +242,29 @@ function Settings({state, onDone}: {state: SessionSnapshot; onDone: () => void})
         </span>
       </label>
 
-      {/*
-        Disconnecting is a fresh start, not a dead end. Ending the room and
-        opening the next one are one action here, so the sidebar button *is* the
-        restart — the alternative left the app sitting on a screen whose only
-        purpose was a button that did exactly this, which is a click asking the
-        user to confirm something they already said.
-
-        The sheet closes first so the new code is what appears behind it.
-      */}
-      <button
-        type="button"
-        className={`button button--danger ${confirmEnd ? 'button--armed' : ''}`}
-        onClick={() => {
-          if (!confirmEnd) {
-            setConfirmEnd(true)
-            return
-          }
-          onDone()
-          void (async () => {
-            await session.endSession()
-            await session.openRoom()
-          })()
-        }}
-        onBlur={() => setConfirmEnd(false)}
-      >
-        {confirmEnd ? 'Confirm — this ends the room for every device' : 'Disconnect everything'}
-      </button>
+      {/* One action, not two. Disconnecting and starting over were separate
+          steps with a dead-end screen between them, and the screen's only
+          button was the step everybody took next. */}
+      <div className="field">
+        <button
+          type="button"
+          className="button button--danger"
+          onClick={async () => {
+            // Closed only on success: a failed restart leaves the error banner
+            // on the room screen, and closing over it would hide the reason.
+            if (await session.restart()) onDismiss()
+          }}
+        >
+          Disconnect and start over
+        </button>
+        {/* "The code stops working" would overclaim: nobody owns a code here,
+            and a device still in the old room stays there. What is true is that
+            it no longer reaches this device. */}
+        <span className="field__hint">
+          Every device is disconnected and you move to a new code. The old one no longer reaches
+          you.
+        </span>
+      </div>
     </div>
   )
 }

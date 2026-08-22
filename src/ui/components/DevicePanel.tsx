@@ -1,7 +1,7 @@
 import {useEffect} from 'react'
 import type {SessionSnapshot} from '../../lib/session/SessionManager.ts'
 import {session} from '../store.ts'
-import {Icon, PathBadge} from './common.tsx'
+import {Icon, PathCost} from './common.tsx'
 
 /**
  * The connected-device list, opened from the count button.
@@ -41,11 +41,7 @@ export function DevicePanel({
               </span>
               <span className="peer__body">
                 <span className="peer__name">{peer.name}</span>
-                {peer.present ? (
-                  <PathBadge kind={peer.path.kind} network={peer.path.network} />
-                ) : (
-                  <span className="peer__away">Reconnecting…</span>
-                )}
+                <PathCost kind={peer.path.kind} away={!peer.present} />
               </span>
               <button
                 type="button"

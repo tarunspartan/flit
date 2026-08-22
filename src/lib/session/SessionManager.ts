@@ -41,7 +41,7 @@ import {
 } from '../utils/device.ts'
 import {randomId} from '../core/ids.ts'
 import {sanitizeSharedText} from '../utils/text.ts'
-import {RoomManager, type RoomRole} from './RoomManager.ts'
+import {RoomManager, loadRoom, saveRoom, type RoomRole} from './RoomManager.ts'
 
 export type SessionStatus = 'starting' | 'open' | 'ended'
 
@@ -237,6 +237,20 @@ export class SessionManager {
     return this.#start(() => this.#rooms.create())
   }
 
+  /**
+   * Rejoins the room this tab was already in, or opens a new one.
+   *
+   * What a reload should do. Opening a fresh room on every load meant applying
+   * an app update quietly moved this device to a new code while the other
+   * device sat on the old one — which reads as "it won't connect", and is why
+   * starting over appeared to fix it.
+   */
+  async resumeOrOpen(): Promise<boolean> {
+    const saved = loadRoom()
+    if (!saved) return this.openRoom()
+    return this.#start(() => this.#rooms.resume(saved) ?? this.#rooms.create())
+  }
+
   async joinRoom(input: string): Promise<boolean> {
     return this.#start(() => this.#rooms.join(input))
   }
@@ -278,6 +292,7 @@ export class SessionManager {
       await transport.join(room.code)
 
       this.#status = 'open'
+      saveRoom(this.#rooms.current)
       this.#armExpiry()
       this.#watchSignaling()
       return true
@@ -638,14 +653,39 @@ export class SessionManager {
     this.#changed()
   }
 
-  async endSession(): Promise<void> {
+  /**
+   * Ends this session and opens a fresh one, as a single action.
+   *
+   * Disconnecting used to land on a dead-end screen whose only control was
+   * "Start over" — a full stop placed directly in front of the one thing
+   * everybody did next. Everything the old button did still happens: peers are
+   * told the session is over, and the old code stops working. The difference is
+   * that a new code is ready without a second click.
+   *
+   * The disconnected screen is still reached by the endings nobody chose — the
+   * other device ending it, the room expiring, a connection that failed — so it
+   * is a report of something that happened rather than a step in a flow.
+   */
+  async restart(): Promise<boolean> {
+    await this.#farewell()
+    // openRoom tears down the transport, resets transfers, clears the peers and
+    // re-arms expiry, so there is nothing for #end to do first.
+    return this.openRoom()
+  }
+
+  /**
+   * Tells every admitted peer that this session is over.
+   *
+   * Without it they see a connection that merely stopped, and sit in
+   * "Reconnecting…" waiting for a device that is not coming back.
+   */
+  async #farewell(): Promise<void> {
     for (const peer of this.#peers.values()) {
       if (!peer.approved) continue
       await this.#transport
         ?.sendControl(peer.id, message({t: 'SESSION_END', reason: 'user'}))
         .catch(() => {})
     }
-    this.#end(null)
   }
 
   /** Shares files with the room. Devices may join afterwards and still get them. */
@@ -851,6 +891,8 @@ export class SessionManager {
   }
 
   #end(error: AppError | null): void {
+    // Nothing to come back to: a reload after this should start clean.
+    saveRoom(null)
     this.#transfers.stopAll()
     this.#error = error
     this.#status = 'ended'

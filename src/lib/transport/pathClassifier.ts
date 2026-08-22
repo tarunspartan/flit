@@ -174,19 +174,6 @@ export function bandwidthCost(kind: PathKind): 'local' | 'internet' | null {
   return kind === 'local' ? 'local' : 'internet'
 }
 
-/**
- * Whether there is a cost worth stating for this kind — and therefore whether
- * the UI should draw the label *and its separator*.
- *
- * It lives here rather than beside the component because the trap it closes is
- * about the kinds, not about rendering: `unknown` is a truthy `PathKind` that
- * has no cost to report, so a guard written as `{kind && …}` drew a separator
- * dot in front of a label that never appeared. Every meta line grew a dangling
- * "·" the moment a peer dropped.
- */
-export function showsPathCost(kind: PathKind | undefined): kind is PathKind {
-  return kind !== undefined && bandwidthCost(kind) !== null
-}
 
 /** Applies an agreed kind to a locally-measured path, keeping our own RTT. */
 export function withKind(path: NetworkPath, kind: PathKind): NetworkPath {

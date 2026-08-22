@@ -19,6 +19,20 @@ const CHUNK_ACTION = 'chunk'
 const PATH_POLL_MS = 2000
 
 /**
+ * How long a fresh connection may look 'direct' before we say so out loud.
+ *
+ * ICE nominates whatever pair validates first, which is routinely the
+ * STUN-mapped one — the host pair needs mDNS resolution and arrives a moment
+ * later, and ICE then renominates to it. Read at that instant the verdict is
+ * honestly 'direct', but 'direct' only ever means "locality could not be
+ * shown", never "this is remote". Asserting "Internet" from it and correcting
+ * to "Local network" seconds later told people their LAN transfer was going
+ * over the internet when it was not. A positive finding — 'local' or 'relay' —
+ * is evidence and shows immediately; the absence of one waits.
+ */
+const PATH_SETTLE_MS = 6000
+
+/**
  * The only file in the app that imports Trystero.
  *
  * Pairing code handling matters here: the code is used as the Trystero
@@ -26,12 +40,51 @@ const PATH_POLL_MS = 2000
  * the relay is a hash of it. A relay operator therefore sees an opaque topic
  * and ciphertext, and cannot join the room or recover the code.
  */
+/**
+ * How much may sit queued on a data channel before the sender pauses.
+ *
+ * Trystero sets this to 64 KB and waits for `bufferedamountlow` whenever more
+ * than that is outstanding. Profiling a 200 MB send showed 99.5% of the
+ * sender's time inside that wait — reading the file and hashing it together
+ * came to 0.5% — so the queue depth, not the CPU, is what sets the rate.
+ */
+const BUFFER_HIGH_WATER = 8 * 1024 * 1024
+
+/**
+ * Raises that high-water mark for every data channel in the page.
+ *
+ * Patched on the prototype rather than on the channel because Trystero owns
+ * the channel and exposes neither end of it: the initiator creates it with
+ * createDataChannel, the answerer receives it through ondatachannel. The
+ * setter only ever raises a value, so anything asking for a deeper queue than
+ * ours still gets what it asked for.
+ */
+let bufferPatched = false
+function raiseChannelBuffering(): void {
+  if (bufferPatched || typeof RTCDataChannel === 'undefined') return
+  bufferPatched = true
+  const proto = RTCDataChannel.prototype
+  const original = Object.getOwnPropertyDescriptor(proto, 'bufferedAmountLowThreshold')
+  if (!original?.get || !original.set) return
+  const {get, set} = original
+  Object.defineProperty(proto, 'bufferedAmountLowThreshold', {
+    configurable: true,
+    enumerable: original.enumerable,
+    get,
+    set(this: RTCDataChannel, value: number) {
+      set.call(this, Math.max(value, BUFFER_HIGH_WATER))
+    }
+  })
+}
+
 export class TrysteroTransport implements Transport {
   readonly selfId = selfId
 
   #room: Room | null = null
   #emitter = new Emitter<TransportEvents>()
   #paths = new Map<PeerId, NetworkPath>()
+  /** When each peer's connection appeared, for PATH_SETTLE_MS. */
+  #pathSince = new Map<PeerId, number>()
   #pathTimer: ReturnType<typeof setInterval> | null = null
   #localOnly: boolean
   #sendControl: ((data: unknown, options: {target: string}) => Promise<void>) | null = null
@@ -53,6 +106,9 @@ export class TrysteroTransport implements Transport {
     if (typeof RTCPeerConnection === 'undefined') {
       throw new AppError('unsupported-browser', 'RTCPeerConnection is unavailable')
     }
+    // Before any channel exists, so both the one we create and the one the
+    // other device offers us are covered.
+    raiseChannelBuffering()
 
     const topic = await deriveRoomTopic(APP_ID, code)
     const iceServers = resolveIceServers(this.#localOnly)
@@ -98,6 +154,7 @@ export class TrysteroTransport implements Transport {
 
     room.onPeerJoin = peerId => {
       this.#paths.set(peerId, UNKNOWN_PATH)
+      this.#pathSince.set(peerId, Date.now())
       this.#emitter.emit('peerJoin', {peerId})
       void this.#pollPaths()
       this.#startPolling()
@@ -105,6 +162,7 @@ export class TrysteroTransport implements Transport {
 
     room.onPeerLeave = peerId => {
       this.#paths.delete(peerId)
+      this.#pathSince.delete(peerId)
       this.#emitter.emit('peerLeave', {peerId})
       if (Object.keys(room.getPeers()).length === 0) this.#stopPolling()
     }
@@ -118,6 +176,7 @@ export class TrysteroTransport implements Transport {
     this.#sendChunk = null
     this.#paths.clear()
     this.#reportedGone.clear()
+    this.#pathSince.clear()
     this.#emitter.clear()
     if (room) await room.leave().catch(() => {})
   }
@@ -190,7 +249,13 @@ export class TrysteroTransport implements Transport {
     for (const [peerId, connection] of Object.entries(peers)) {
       if (this.#reportedGone.has(peerId)) continue
       const previous = this.#paths.get(peerId)
-      const path = steadyPath(previous, await classifyPath(connection))
+      const fresh = await classifyPath(connection)
+      const since = this.#pathSince.get(peerId) ?? 0
+      const settling =
+        fresh.kind === 'direct' &&
+        previous?.kind !== 'local' &&
+        Date.now() - since < PATH_SETTLE_MS
+      const path = settling ? UNKNOWN_PATH : steadyPath(previous, fresh)
       this.#paths.set(peerId, path)
       // Only wake the UI when the classification actually changes; RTT drifts
       // constantly and is read from the snapshot instead.

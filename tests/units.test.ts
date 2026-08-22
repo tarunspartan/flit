@@ -8,10 +8,12 @@ import {canTransition, isTerminal} from '../src/lib/transfer/states.ts'
 import {FlowController} from '../src/lib/transfer/FlowController.ts'
 import {sanitizeFilename, sanitizeRelativePath, uniqueFilename} from '../src/lib/utils/filename.ts'
 import {SpeedMeter} from '../src/lib/utils/speed.ts'
-import {agreeKind, bandwidthCost, classifyPath, isPrivate, sameSubnet, showsPathCost, steadyPath} from '../src/lib/transport/pathClassifier.ts'
-import {deadLinks, PATH_KINDS} from '../src/lib/transport/Transport.ts'
+import {agreeKind, bandwidthCost, classifyPath, isPrivate, sameSubnet, steadyPath} from '../src/lib/transport/pathClassifier.ts'
+import {deadLinks} from '../src/lib/transport/Transport.ts'
 import {formatBytes, formatDuration} from '../src/lib/utils/format.ts'
 import {takeSharedFiles} from '../src/lib/utils/shareTarget.ts'
+import {checkCapacity} from '../src/lib/storage/estimate.ts'
+import {FileSystemStore} from '../src/lib/storage/FileSystemStore.ts'
 
 describe('pairing codes', () => {
   it('generates 12 symbols of Crockford base32', () => {
@@ -630,25 +632,6 @@ describe('noticing a link die without being told', () => {
   })
 })
 
-describe('path cost visibility', () => {
-  // Regression: the separator dot in front of PathCost was guarded on the kind
-  // being truthy, but 'unknown' is a truthy kind that PathCost draws nothing
-  // for. The moment a peer dropped, every meta line grew a dangling "·".
-  it('is shown only for a kind that has a cost to state', () => {
-    expect(showsPathCost('local')).toBe(true)
-    expect(showsPathCost('direct')).toBe(true)
-    expect(showsPathCost('relay')).toBe(true)
-    expect(showsPathCost('unknown')).toBe(false)
-    expect(showsPathCost(undefined)).toBe(false)
-  })
-
-  it('agrees with what PathCost actually renders', () => {
-    for (const kind of PATH_KINDS) {
-      expect(showsPathCost(kind)).toBe(bandwidthCost(kind) !== null)
-    }
-  })
-})
-
 describe('formatting', () => {
   // A value and its unit are joined by a non-breaking space so they never wrap
   // apart. Spelled out here rather than typed literally, because the difference
@@ -755,5 +738,87 @@ describe('bandwidth cost of a path', () => {
 
   it('says nothing at all while the path is unknown', () => {
     expect(bandwidthCost('unknown')).toBeNull()
+  })
+})
+
+describe('storage capacity advice', () => {
+  const real = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const withQuota = (quota: number, usage: number) => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {storage: {estimate: async () => ({quota, usage})}},
+      configurable: true,
+      writable: true
+    })
+  }
+
+  afterEach(() => {
+    if (real) Object.defineProperty(globalThis, 'navigator', real)
+  })
+
+  const GB = 1024 ** 3
+
+  it('warns when the file will not fit in the origin quota', async () => {
+    withQuota(3 * GB, 0)
+    expect((await checkCapacity(4 * GB)).verdict).toBe('insufficient')
+  })
+
+  it('calls it tight when the file would use most of the quota', async () => {
+    withQuota(3 * GB, 0)
+    expect((await checkCapacity(2.7 * GB)).verdict).toBe('tight')
+  })
+
+  it('says nothing about the quota for a file that never touches it', async () => {
+    // The regression: a 4 GB file streamed to a location the user picks is
+    // bounded by real free disk, not by the origin's ~3 GB allowance. Judging
+    // it against the quota produced "may not have room" on a drive with plenty.
+    withQuota(3 * GB, 0)
+    const check = await checkCapacity(4 * GB, false)
+    expect(check.verdict).toBe('ok')
+    expect(check.appliesToQuota).toBe(false)
+  })
+
+  it('admits it does not know when the browser reports no quota', async () => {
+    withQuota(0, 0)
+    expect((await checkCapacity(GB)).verdict).toBe('unknown')
+  })
+})
+
+describe('the save dialog', () => {
+  const install = (behaviour: () => Promise<unknown>) => {
+    Object.defineProperty(globalThis, 'showSaveFilePicker', {
+      value: behaviour,
+      configurable: true,
+      writable: true
+    })
+  }
+
+  afterEach(() => {
+    // @ts-expect-error removing the stub again
+    delete globalThis.showSaveFilePicker
+  })
+
+  it('treats a dismissed dialog as a decision, not a storage failure', async () => {
+    // The regression: this used to be swallowed into `null`, which the store
+    // read as "try the next tier" — so pressing Cancel downloaded the file into
+    // browser storage anyway, the opposite of what the button said.
+    install(async () => {
+      throw new DOMException('The user aborted a request.', 'AbortError')
+    })
+    await expect(FileSystemStore.open('f.bin', 'application/octet-stream')).rejects.toMatchObject({
+      code: 'save-cancelled'
+    })
+  })
+
+  it('still falls back when the picker fails for some other reason', async () => {
+    // A broken picker is not a decision, and refusing the transfer over it
+    // would be worse than quietly using another tier.
+    install(async () => {
+      throw new DOMException('no', 'SecurityError')
+    })
+    await expect(FileSystemStore.open('f.bin', 'application/octet-stream')).resolves.toBeNull()
+  })
+
+  it('reports nothing to choose from when the API is absent', async () => {
+    await expect(FileSystemStore.open('f.bin', '')).resolves.toBeNull()
   })
 })
