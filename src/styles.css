@@ -1513,6 +1513,22 @@ button {
   width: auto;
 }
 
+/*
+ * Keeps the state in one column whether or not the row has a bar.
+ *
+ * The bar is the only flexible thing on a peer line, so a row without one —
+ * every terminal state: cancelled, completed, failed, declined — had nothing to
+ * absorb the slack and collapsed against the name. Three devices on one file
+ * put their states at three different x positions, none of them the column the
+ * transferring row used.
+ *
+ * On a row that does have a bar this changes nothing: the bar has already taken
+ * the free space, so there is none left for the margin to claim.
+ */
+.row--peer .row__state {
+  margin-left: auto;
+}
+
 /* ------------------------------------------------------------- incoming */
 .incoming--waiting_for_accept {
   border-color: var(--accent);
