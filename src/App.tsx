@@ -48,22 +48,10 @@ export function App() {
         </svg>
       </div>
 
-      {/* No nav bar — just the floating controls. */}
+      {/* No nav bar — just the floating controls. The connected-device count
+          used to float here too; the route at the top of the room says the same
+          thing in the place you are already looking, and opens the same list. */}
       <div className="fabs">
-        {state.peers.length > 0 && (
-          <button
-            type="button"
-            className="fab fab--devices"
-            onClick={() => setDevicesOpen(open => !open)}
-            aria-expanded={devicesOpen}
-            aria-label={`${state.peers.length} device${
-              state.peers.length === 1 ? '' : 's'
-            } connected — show list`}
-          >
-            <span className="fab__dot" aria-hidden="true" />
-            {state.peers.length} connected
-          </button>
-        )}
         {/* Present only when the browser can actually install on a press. */}
         {install.available && (
           <button
@@ -91,6 +79,7 @@ export function App() {
       )}
 
       <main className="main">
+        <h1 className="sr-only">flit — move files between your devices</h1>
         {/* The scroller is `.main`; this is the column inside it, so the
             scrollbar rides the window edge rather than the column's. */}
         <div className="main__column">
@@ -144,7 +133,9 @@ export function App() {
               <Spinner label="Getting ready…" />
             </div>
           )}
-          {state.status === 'open' && <RoomScreen state={state} />}
+          {state.status === 'open' && (
+          <RoomScreen state={state} onOpenDevices={() => setDevicesOpen(true)} />
+        )}
           {state.status === 'ended' && (
             <div className="ended">
               <h2>Disconnected</h2>

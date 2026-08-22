@@ -485,12 +485,16 @@ export class TransferManager {
     return [...this.#receives.values()].map(transfer => transfer.view())
   }
 
+  /**
+   * Read straight off `state` rather than through `view()`. This is called on
+   * every render of the app — it drives the unload guard and the wake lock —
+   * and `view()` builds a fresh object per transfer, so the old form allocated
+   * one object per transfer several times a second to look at one field.
+   */
   hasActiveTransfers(): boolean {
-    const active = (view: TransferView) => !isTerminal(view.state)
-    return (
-      [...this.#sends.values()].some(transfer => active(transfer.view())) ||
-      [...this.#receives.values()].some(transfer => active(transfer.view()))
-    )
+    for (const transfer of this.#sends.values()) if (!isTerminal(transfer.state)) return true
+    for (const transfer of this.#receives.values()) if (!isTerminal(transfer.state)) return true
+    return false
   }
 
   /** Cancels everything in flight and clears history, for a fresh session. */

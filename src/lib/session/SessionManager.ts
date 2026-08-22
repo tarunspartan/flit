@@ -12,7 +12,23 @@ import {
 } from '../storage/index.ts'
 import {TrysteroTransport} from '../transport/TrysteroTransport.ts'
 import {agreeKind, withKind} from '../transport/pathClassifier.ts'
-import {UNKNOWN_PATH, type NetworkPath, type PathKind, type PeerId} from '../transport/Transport.ts'
+import {
+  UNKNOWN_PATH,
+  type NetworkPath,
+  type PathKind,
+  type PeerId,
+  type Transport
+} from '../transport/Transport.ts'
+
+/**
+ * How a session gets its transport. Injected rather than constructed inside,
+ * so the seam has a second adapter and this module has a test surface — the
+ * same shape `TransferManager` already uses for `PeerLink`.
+ *
+ * A factory rather than an instance because a session builds a fresh transport
+ * every time it opens, joins or reconnects, and tears the previous one down.
+ */
+export type TransportFactory = (options: {localOnly: boolean}) => Transport
 import type {PeerLink} from '../transfer/PeerLink.ts'
 import {TransferManager} from '../transfer/TransferManager.ts'
 import type {SharedFileView, TransferView} from '../transfer/states.ts'
@@ -139,7 +155,7 @@ interface SessionEvents extends Record<string, unknown> {
 export class SessionManager {
   #emitter = new Emitter<SessionEvents>()
   #rooms = new RoomManager()
-  #transport: TrysteroTransport | null = null
+  #transport: Transport | null = null
   #transfers: TransferManager
 
   #status: SessionStatus = 'starting'
@@ -163,7 +179,10 @@ export class SessionManager {
   #expiryTimer: ReturnType<typeof setTimeout> | null = null
   #unsubscribe: (() => void)[] = []
 
-  constructor() {
+  #createTransport: TransportFactory
+
+  constructor(createTransport: TransportFactory = options => new TrysteroTransport(options)) {
+    this.#createTransport = createTransport
     this.#transfers = new TransferManager(peerId => this.#linkFor(peerId), this.#prefs)
     this.#transfers.on('update', () => this.#changed())
     this.#transfers.on('notice', notice => this.#notice(notice.title, notice.message, notice.tone))
@@ -267,7 +286,7 @@ export class SessionManager {
       this.#everHadPeer = false
 
       const room = makeRoom()
-      const transport = new TrysteroTransport({localOnly: this.#localOnly})
+      const transport = this.#createTransport({localOnly: this.#localOnly})
       this.#transport = transport
       this.#wireTransport(transport)
       await transport.join(room.code)
@@ -289,7 +308,7 @@ export class SessionManager {
     }
   }
 
-  #wireTransport(transport: TrysteroTransport): void {
+  #wireTransport(transport: Transport): void {
     this.#unsubscribe = [
       transport.on('peerJoin', ({peerId}) => this.#onPeerJoin(peerId)),
       transport.on('peerLeave', ({peerId}) => this.#onPeerLeave(peerId)),

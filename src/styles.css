@@ -2,29 +2,41 @@
 
 /*
  * One accent, used for the primary action, progress fill, incoming chips,
- * focus rings and links. A deep ocean blue at OKLCH hue 245 — 19 degrees off
- * the bright #2f6bff it replaces and much darker, so it reads as considered
- * rather than neon. It stays 87 degrees clear of the nearest status colour
- * (--ok at 158), which is what keeps "do this" from looking like "this
- * finished"; green, amber and red are all spoken for by --ok, --warn and
- * --danger, so the accent cannot live in any of them.
+ * focus rings and links. A deep ocean blue at OKLCH hue 245 — dark enough to
+ * read as considered rather than neon, and 87 degrees clear of the nearest
+ * status colour (--ok at 158), which is what keeps "do this" from looking like
+ * "this finished"; green, amber and red are all spoken for by --ok,
+ * --warn/--relay and --danger, so the accent cannot live in any of them.
+ *
+ * The neutrals are that same hue 245 held at near-zero chroma rather than a
+ * true grey. So the ground the app sits on is a desaturated version of its own
+ * accent — surfaces read as related to the line that crosses them instead of
+ * as the default grey every utility app ships with. Chroma stays under 0.03,
+ * which is enough to feel the hue on a large field and not enough to read as a
+ * blue theme.
  *
  * Every foreground here clears WCAG 2.1 AA against the darkest surface it can
- * land on (4.5:1 for text, 3:1 for controls and focus rings under SC 1.4.11).
- * The light values were derived by holding each colour's OKLCH hue and chroma
- * and lowering only its lightness, so the palette keeps its hue relationships
- * instead of being re-picked by eye — the previous greens, ambers and greys
- * sat between 2.95:1 and 4.46:1 and failed.
+ * land on (4.5:1 for text). Both palettes were derived, not picked: hue and
+ * chroma held, lightness moved, then every pairing measured against the
+ * previous values so the recut could not quietly cost contrast. The two
+ * faintest text tiers gained from it — --text-faint went from 4.19 to 4.71 on
+ * dark --surface-2, the tightest pairing in the app.
+ *
+ * Type has three jobs, and only one of them is prose. Sentences are set in the
+ * system sans (--font). Everything that is really an instrument reading —
+ * labels, states, sizes, speeds, the pairing code, the route — is set in
+ * --mono, uppercase and tracked. It is the vernacular of the thing this app
+ * actually is: two endpoints and a measured line between them.
  */
 :root {
-  --bg: #f6f7f9;
+  --bg: #f4f7fa;
   --surface: #ffffff;
-  --surface-2: #f1f3f6;
-  --border: #e2e5ea;
-  --border-strong: #cdd3db;
-  --text: #10131a;
-  --text-soft: #5b6472;
-  --text-faint: #67707d;
+  --surface-2: #eff5fa;
+  --border: #dce4eb;
+  --border-strong: #bac6d1;
+  --text: #0e1821;
+  --text-soft: #4d5d6b;
+  --text-faint: #5c6b78;
   --accent: #015d94;
   --accent-soft: #e4f2fe;
   --ok: #01804e;
@@ -43,14 +55,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --bg: #0b0d10;
-    --surface: #14171c;
-    --surface-2: #1b1f26;
-    --border: #262b33;
-    --border-strong: #363d47;
-    --text: #eef1f5;
-    --text-soft: #a5aeba;
-    --text-faint: #78818e;
+    --bg: #091016;
+    --surface: #141c23;
+    --surface-2: #1d2831;
+    --border: #29353f;
+    --border-strong: #3d4c58;
+    --text: #ecf1f5;
+    --text-soft: #aeb9c3;
+    --text-faint: #85929d;
     --accent: #2ba8ff;
     --accent-soft: #00253f;
     --ok: #3ecf8e;
@@ -65,14 +77,14 @@
 }
 
 :root[data-theme='dark'] {
-  --bg: #0b0d10;
-  --surface: #14171c;
-  --surface-2: #1b1f26;
-  --border: #262b33;
-  --border-strong: #363d47;
-  --text: #eef1f5;
-  --text-soft: #a5aeba;
-  --text-faint: #78818e;
+  --bg: #091016;
+  --surface: #141c23;
+  --surface-2: #1d2831;
+  --border: #29353f;
+  --border-strong: #3d4c58;
+  --text: #ecf1f5;
+  --text-soft: #aeb9c3;
+  --text-faint: #85929d;
   --accent: #2ba8ff;
   --accent-soft: #00253f;
   --ok: #3ecf8e;
@@ -120,6 +132,8 @@ h3 {
   margin: 0;
   line-height: 1.25;
   letter-spacing: -0.02em;
+  /* Evens the last line rather than leaving one word stranded on it. */
+  text-wrap: balance;
 }
 
 button {
@@ -139,6 +153,24 @@ button {
 
 :focus:not(:focus-visible) {
   outline: none;
+}
+
+/*
+ * Present for assistive technology, absent for everyone else. The home screen
+ * is deliberately down to a code and a drop target with no visible heading, so
+ * the document's one <h1> has to live here — a page whose heading tree starts
+ * at <h2> gives a screen reader nothing to open with.
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 0;
+  clip-path: inset(50%);
 }
 
 /* Copy that depends on whether there is a pointer to drag with. */
@@ -227,7 +259,6 @@ button {
     padding: 11px;
   }
 
-  .fab--devices,
   .fab--label {
     padding: 11px 14px;
   }
@@ -238,27 +269,6 @@ button {
   padding: 8px 13px;
   font: inherit;
   font-size: 13px;
-}
-
-/* The live-device pill: green because it is a healthy, active state. */
-.fab--devices {
-  padding: 8px 13px;
-  color: var(--ok);
-  font-size: 13px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.fab--devices:hover {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
-}
-
-.fab__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ok);
 }
 
 /* ------------------------------------------------------------- device panel */
@@ -440,7 +450,9 @@ button {
   align-items: center;
   gap: 5px;
   min-width: 0;
-  font-size: 12.5px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   white-space: nowrap;
   overflow: hidden;
@@ -531,6 +543,10 @@ button {
   color: var(--text-soft);
   font-size: 11.5px;
   white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 /* One fact in a meta line. An element rather than a bare text node so the
@@ -574,7 +590,8 @@ button {
 
 .row__size {
   flex: none;
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -593,7 +610,8 @@ button {
   gap: 4px;
   flex: none;
   min-width: 58px;
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -995,6 +1013,7 @@ button {
   background: var(--danger-soft);
 }
 
+
 .button--small {
   padding: 6px 11px;
   font-size: 13px;
@@ -1167,9 +1186,16 @@ button {
 
 .code__value {
   font-family: var(--mono);
-  font-size: clamp(20px, 5.5vw, 25px);
+  /* Sized to hold all 14 characters on one line at every width the two-column
+     layout can give it — a wrapped code stops being a specimen and becomes a
+     paragraph. */
+  font-size: clamp(19px, 5vw, 23px);
   font-weight: 600;
-  letter-spacing: 0.13em;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+  /* Indented by the tracking it adds to its last character, or the box looks
+     right-heavy against a centred QR. */
+  text-indent: 0.14em;
   padding: 8px 16px;
   border-radius: var(--radius-sm);
   /* Sits on the page background now that the card is gone, so it needs its own
@@ -1243,14 +1269,28 @@ button {
 }
 
 /* -------------------------------------------------------------- drop zone */
+/*
+ * A button that opens the file picker — drawn in the same card language as
+ * everything below it, not as a dashed drop target.
+ *
+ * The dashes were describing a boundary that does not exist: dropping is
+ * handled on the window, so files land anywhere on the page. And the signal
+ * they were standing in for already fires at the only moment it is useful —
+ * `.dropveil` covers the whole page in dashes the instant a drag enters it.
+ * A permanent dashed rectangle was a second copy of that signal, showing at
+ * the times it could not be acted on, around a control whose own label said
+ * "anywhere".
+ */
 .drop {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 30px 20px;
-  border: 2px dashed var(--border-strong);
+  /* Tighter than it was as a dashed region: a control should be sized by its
+     content and its touch target, not by the area it was pretending to be. */
+  padding: 22px 20px;
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text-soft);
@@ -1301,22 +1341,24 @@ button {
 .list__title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 620;
+  gap: 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.14em;
   color: var(--text-faint);
-  margin-bottom: 9px;
+  margin-bottom: 10px;
 }
 
+/* A plain tracked numeral rather than a grey pill: next to a monospaced label
+   the count already reads as that label's value, and the pill was a container
+   drawn around something nothing was going to bump into. */
 .list__count {
-  font-size: 11.5px;
+  font-family: var(--mono);
+  font-size: 11px;
   color: var(--text-soft);
-  background: var(--surface-2);
-  border-radius: 999px;
-  padding: 1px 7px;
-  letter-spacing: 0;
+  letter-spacing: 0.06em;
 }
 
 .list__items {
@@ -1326,6 +1368,35 @@ button {
   display: flex;
   flex-direction: column;
   gap: 9px;
+}
+
+/*
+ * Skip layout and paint for rows that are scrolled off screen. Irrelevant for
+ * the five-file case and the reason the hundred-file case stays usable — the
+ * queue is allowed to hold 500, and dropping a folder of photos reaches that
+ * easily.
+ *
+ * The intrinsic size is declared twice on purpose: the first is understood
+ * everywhere and keeps the scrollbar roughly honest before a row has rendered,
+ * the second replaces it with the browser's remembered real height where that
+ * is supported, and is simply dropped where it is not.
+ */
+.list__items > li,
+.row {
+  content-visibility: auto;
+}
+
+.list__items > li {
+  contain-intrinsic-size: 0 84px;
+  contain-intrinsic-size: auto 84px;
+}
+
+/* A row inside an opened batch is where the long list actually is: files
+   dropped together fold into one card, so five hundred of them are five
+   hundred rows inside a single list item, not five hundred list items. */
+.row {
+  contain-intrinsic-size: 0 40px;
+  contain-intrinsic-size: auto 40px;
 }
 
 /* --------------------------------------------------------- shared files */
@@ -1381,12 +1452,18 @@ button {
   white-space: nowrap;
 }
 
+/* The line under a filename is all measurement — size, sender, network — so it
+   is set as a readout: monospaced and tabular, so a column of cards has its
+   numbers in a column too. The filename above it stays in the sans, because a
+   filename is a name and not a reading. */
 .shared__meta,
 .incoming__meta {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12.5px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
   color: var(--text-faint);
 }
 
@@ -1814,10 +1891,11 @@ button {
 }
 
 .panel h3 {
-  font-size: 13px;
-  font-weight: 620;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.14em;
   color: var(--text-faint);
 }
 
@@ -1991,6 +2069,307 @@ button {
  * asking about. Nothing here is removed outright — an element that simply
  * appeared with no transition at all would be a different kind of jarring.
  */
+/* ----------------------------------------------------------------- route */
+
+/*
+ * One origin and one leg per device.
+ *
+ * Which way a file travels is this product's trust signal, and it used to be a
+ * badge inside a popover. Here it is the first thing on the screen and it is
+ * drawn rather than written: each leg's own texture is that link's
+ * classification.
+ *
+ *   solid                  your own network — nothing is in the middle of it
+ *   dashed                 the internet, still directly between the two devices
+ *   dashed, marker mid     a relay: there is a server in your file's path, so
+ *                          there is a server drawn in the middle of the line
+ *   fine dots, hollow end   nobody is standing there
+ *
+ * A room holds eight devices and the protocol is strictly pairwise, so from
+ * this device's seat the shape is a hub with independent spokes. Drawing one
+ * line for all of them could only ever have been a guess — and the case that
+ * matters most is exactly the one a single line destroys: the laptop on your
+ * Wi-Fi and the phone on mobile data, where the same file costs two very
+ * different things.
+ *
+ * Colour follows the app's existing vocabulary rather than inventing one:
+ * --ok for a healthy local link, --relay amber for a relayed one, --warn while
+ * reconnecting, and plain text colour for a direct internet link, which is
+ * neither good news nor bad.
+ */
+
+/* Purely a persistent live region — see Route.tsx. It carries no look of its
+   own beyond passing its width down. */
+.route-slot {
+  width: 100%;
+}
+
+.route {
+  --wire: var(--border-strong);
+  --ink: var(--text-faint);
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  text-align: left;
+  color: var(--ink);
+}
+
+/*
+ * Colour by kind, declared for the whole route and for a single leg with the
+ * same values. With several devices the kind belongs to the leg rather than to
+ * the element around it, so a leg simply redeclares these two properties and
+ * everything inside it follows — no per-leg rules for wires, dots or names.
+ */
+.route--local,
+.route__leg--local {
+  --wire: var(--ok);
+  --ink: var(--ok);
+}
+
+.route--direct,
+.route--mixed,
+.route__leg--direct {
+  --wire: var(--text-faint);
+  --ink: var(--text-soft);
+}
+
+.route--relay,
+.route__leg--relay {
+  --wire: var(--relay);
+  --ink: var(--relay);
+}
+
+.route--away,
+.route__leg--away {
+  --wire: var(--warn);
+  --ink: var(--warn);
+}
+
+/* Connected, still classifying. The line is already saying "connected"; the
+   colour must not say anything yet. */
+.route--unknown,
+.route__leg--unknown {
+  --wire: var(--text-faint);
+  --ink: var(--text-faint);
+}
+
+.route--waiting,
+.route__leg--waiting {
+  --wire: var(--border-strong);
+  --ink: var(--text-faint);
+}
+
+/* Interactive only once there is a roster to open. */
+.route--live {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.route--live:hover {
+  background: var(--surface-2);
+}
+
+.route--live:hover .route__end {
+  color: var(--text);
+}
+
+.route__ends {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--text-faint);
+}
+
+.route__end {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+
+/* The far end is the one that changes, so it carries the state colour and the
+   near end stays quiet. */
+.route__end--far {
+  text-align: right;
+  color: var(--ink);
+}
+
+.route__fan {
+  display: flex;
+  align-items: center;
+  color: var(--wire);
+}
+
+.route__origin {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.route__legs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* Several legs leave from one device, so the stub joining them is drawn once
+   and the origin dot sits on it. With a single leg there is nothing to join
+   and the rail would be a tick hanging off a dot. */
+.route--many .route__origin {
+  position: relative;
+  z-index: 1;
+  margin-right: -4px;
+}
+
+/* The rail is a pseudo-element rather than a border so it can stop at the
+   outer legs' own centres. Run edge to edge it overshot the top and bottom
+   wires by half a row and read as a bracket drawn around the legs rather than
+   the junction they leave from. */
+.route--many .route__legs {
+  position: relative;
+  padding-left: 12px;
+}
+
+.route--many .route__legs::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  border-left: 1px solid var(--border-strong);
+}
+
+/* A named leg is a text line tall rather than a dot tall. */
+.route--many.route--named .route__legs::before {
+  top: 7px;
+  bottom: 7px;
+}
+
+.route__leg {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--wire);
+}
+
+/* A fixed share of the width rather than each name taking what it needs, so
+   the endpoint dots land in a column instead of stopping wherever the previous
+   device's name happened to end. Sized so three names still read at 320px;
+   past three the names fold into the roster and the legs carry on alone. */
+.route__leg-name {
+  flex: 0 0 38%;
+  padding-left: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--ink);
+}
+
+.route__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* A ring rather than a dot: the far end of the leg exists, nobody is on it.
+   A shade wider than a filled dot, because a 7px ring at hairline weight is
+   not something you can see from reading distance. */
+.route__dot--open {
+  width: 9px;
+  height: 9px;
+  background: none;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+.route__wire {
+  flex: 1;
+  height: 2px;
+  min-width: 16px;
+  background: repeating-linear-gradient(90deg, currentColor 0 5px, transparent 5px 11px);
+}
+
+/* The only unbroken line in the set. */
+.route__leg--local .route__wire {
+  background: currentColor;
+}
+
+/* Nobody on the other end yet, so the line is barely drawn: a fine dotted
+   rhythm at half strength. A dashed line and an empty line were reading as the
+   same thing when they are the two most different states there are — and the
+   travelling animation that told them apart is exactly what a reduced-motion
+   setting takes away. */
+.route__leg--waiting .route__wire {
+  height: 1px;
+  opacity: 0.55;
+  background: repeating-linear-gradient(90deg, currentColor 0 2px, transparent 2px 8px);
+}
+
+/* Travelling dashes while there is genuinely something in progress — looking
+   for a device, or looking for one again. They stop the moment a device lands,
+   so the movement means "still searching" rather than "this app has
+   animations". */
+.route__leg--away .route__wire {
+  animation: route-travel 1.1s linear infinite;
+}
+
+.route__leg--waiting .route__wire {
+  animation: route-seek 1.4s linear infinite;
+}
+
+@keyframes route-travel {
+  to {
+    background-position: 11px 0;
+  }
+}
+
+@keyframes route-seek {
+  to {
+    background-position: 8px 0;
+  }
+}
+
+/* A square on its corner, mid-leg: the server the bytes are passing through. */
+.route__via {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 5px;
+  background: currentColor;
+  transform: rotate(45deg);
+}
+
+.route__state {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  text-align: center;
+  color: var(--ink);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .spinner {
     animation-duration: 2s;
@@ -2014,6 +2393,13 @@ button {
 
   .button:active:not(:disabled) {
     transform: none;
+  }
+
+  /* The dashes stop travelling; the dash pattern itself stays, because that is
+     what says which kind of link this is. */
+  .route__leg--waiting .route__wire,
+  .route__leg--away .route__wire {
+    animation: none;
   }
 
   /* Keep the fade so these still read as appearing, but drop the travel. */

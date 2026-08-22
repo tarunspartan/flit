@@ -8,13 +8,20 @@ import {asLink} from '../../lib/utils/text.ts'
 import {formatBytes} from '../../lib/utils/format.ts'
 import {session} from '../store.ts'
 import {Icon, PathCost, ProgressBar, Spinner} from './common.tsx'
+import {Route} from './Route.tsx'
 import {IncomingFile, IncomingRow, SharedFile, SharedRow, type PathLookup} from './TransferItem.tsx'
 
 /**
  * The whole app. A room is already open by the time this renders, so the first
  * thing on screen is the code to scan — nothing to read, nothing to click.
  */
-export function RoomScreen({state}: {state: SessionSnapshot}) {
+export function RoomScreen({
+  state,
+  onOpenDevices
+}: {
+  state: SessionSnapshot
+  onOpenDevices: () => void
+}) {
   const fileInput = useRef<HTMLInputElement>(null)
   const incoming = state.incoming.filter(transfer => !isTerminal(transfer.state))
   // Grouped across finished files too: a batch that loses each file as it
@@ -36,9 +43,15 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
 
   return (
     <div className="room">
+      {/* Before anything else: where this file would go, and by which road. */}
+      <Route state={state} onOpenDevices={onOpenDevices} />
+
       <JoinStatus state={state} />
 
-      <Pair state={state} />
+      {/* Keyed on the peer count so arriving or losing a device remounts this
+          with its fold state fresh, rather than an effect setting state in
+          response to a prop change and costing a second render pass. */}
+      <Pair key={state.peers.length} state={state} />
 
       <button
         type="button"
@@ -48,13 +61,16 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
         <Icon name="upload" size={hasContent ? 20 : 26} />
         {/* "Drop" means nothing on a touch screen, so the copy follows the
             input method rather than assuming a mouse. */}
+        {/* Named for what pressing it does, rather than for the gesture the
+            box used to imply. Dropping is not confined to this control — it
+            works anywhere on the page — so the hint is where that belongs. */}
         <span className="drop__title">
-          <span className="pointer-only">Drop files anywhere</span>
+          <span className="pointer-only">Choose files</span>
           <span className="touch-only">Send files</span>
         </span>
         {!hasContent && (
           <span className="drop__hint">
-            <span className="pointer-only">or click to choose · paste an image</span>
+            <span className="pointer-only">or drop them anywhere · paste an image</span>
             <span className="touch-only">Photos, videos, documents — anything</span>
           </span>
         )}
@@ -182,10 +198,10 @@ export function RoomScreen({state}: {state: SessionSnapshot}) {
  */
 function Pair({state}: {state: SessionSnapshot}) {
   const connected = state.peers.length > 0
+  // Starts folded on every mount, and the call site remounts this whenever the
+  // peer count changes — so a device arriving re-folds it, because the reason
+  // it was opened is spent.
   const [expanded, setExpanded] = useState(false)
-
-  // Re-fold once a device actually arrives: the reason it was opened is spent.
-  useEffect(() => setExpanded(false), [state.peers.length])
 
   if (connected && !expanded) {
     return (
@@ -485,7 +501,7 @@ function SendText() {
           event.preventDefault()
           send()
         }}
-        placeholder="Send a link or note"
+        placeholder="Send a link or note…"
         aria-label="Send a link or note to connected devices"
         maxLength={LIMITS.maxTextLength}
         autoComplete="off"
@@ -699,8 +715,15 @@ function Code({display, url}: {display: string | null; url: string | null}) {
       <button
         type="button"
         className="code__value"
+        // Auto-translate rewrites strings that look like words; a mangled code
+        // silently will not pair.
+        translate="no"
         onClick={() => void copy('code', display)}
         title="Copy code"
+        /* `title` is a pointer affordance only. The accessible name keeps the
+           visible code in it and says what pressing it does, which the code on
+           its own never did. */
+        aria-label={`Copy code ${display}`}
       >
         {display}
       </button>

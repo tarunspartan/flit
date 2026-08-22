@@ -174,6 +174,7 @@ export function bandwidthCost(kind: PathKind): 'local' | 'internet' | null {
   return kind === 'local' ? 'local' : 'internet'
 }
 
+
 /** Applies an agreed kind to a locally-measured path, keeping our own RTT. */
 export function withKind(path: NetworkPath, kind: PathKind): NetworkPath {
   return kind === path.kind ? path : {...path, kind, network: NETWORK_LABEL[kind]}

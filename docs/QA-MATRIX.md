@@ -19,7 +19,7 @@ npm run typecheck && npm test && npm run build
 
 | Check | Status |
 |---|---|
-| 62 unit + end-to-end protocol tests pass | ☐ |
+| 89 unit, session and end-to-end protocol tests pass | ☐ |
 | Production build succeeds | ☐ |
 | No type errors | ☐ |
 
@@ -90,6 +90,9 @@ npm run typecheck && npm test && npm run build
 | Storage warning before accept | Shown when the file is close to free space | ☐ |
 | Finalization failure | Distinguished from a network failure in the message | ☐ |
 | Disconnect at 50% | Resumes from checkpoint; does not restart | ☐ |
+| Only one end notices the drop | The end that noticed restarts it; no deadlock | ☐ |
+| Peer killed outright (no clean leave) | Other devices mark it away within a poll, not never | ☐ |
+| Peer flaps repeatedly | Reconnect still gives up on time, measured from the first drop | ☐ |
 | Disconnect during verification | Recovers; does not hang | ☐ |
 | Sender file deleted mid-transfer | Clear "couldn't read the file" | ☐ |
 | Save picker cancelled | Falls back to OPFS, transfer continues | ☐ |
@@ -112,6 +115,20 @@ npm run typecheck && npm test && npm run build
 |---|---|---|
 | Light / dark / system themes | All readable; QR stays scannable | ☐ |
 | Speed and ETA | Smoothed, no wild jumps, no misleading "0 seconds" | ☐ |
+| Route, waiting | Faint dotted line, hollow far end, "Scan to connect" | ☐ |
+| Route, connected locally | One unbroken green line and "Local network" | ☐ |
+| Route, connected over the internet | Dashed line, no relay marker | ☐ |
+| Route, relayed | Marker drawn mid-line, amber | ☐ |
+| Route, peer dropped | Amber, hollow far end, "Reconnecting" | ☐ |
+| Route, two or three devices | One leg each, every leg carrying its device name | ☐ |
+| Route, legs line up | Endpoint dots form a column whatever the names are | ☐ |
+| Route, four or more devices | Names fold away, header takes over the count, legs stay | ☐ |
+| Route, a full room of eight | All eight legs drawn; no overflow at 320 px | ☐ |
+| Route, links disagree | Counts them — "2 local · 1 internet" — never averages them | ☐ |
+| Route, one device drops | That leg alone goes amber and hollow; the others keep their paths | ☐ |
+| Route, leg order | Matches the roster the route opens | ☐ |
+| Route, still classifying | Line only — no network claimed until one is known | ☐ |
+| Route opens the device list | Tapping it shows the roster; not clickable with no devices | ☐ |
 | Path badge per device | Matches that device's actual ICE candidate pair | ☐ |
 | Path badge agrees on both devices | Same verdict on each end, and it does not flip to "Internet" seconds after settling on "Local network" | ☐ |
 | Join by code vs by QR | Identical outcome; pasting a code with a stray space or quote still joins | ☐ |
@@ -135,7 +152,9 @@ npm run typecheck && npm test && npm run build
 | Cancel the running download | Stops it; the next queued file starts | ☐ |
 | Receiving wording | The receiving device says "Receiving", not "Sending" | ☐ |
 | Whole-window drag and drop | Overlay appears anywhere on the page | ☐ |
-| Home screen | QR and drop target only — no explanatory copy | ☐ |
+| Home screen | Route, code and one files control — no explanatory copy | ☐ |
+| Files control | Says what pressing it does, and opens the picker | ☐ |
+| Dashes appear only while dragging | Nothing is drawn as a drop target until a drag enters the page | ☐ |
 | Transfer details panel | Protocol, connection, network, storage all correct | ☐ |
 | Incoming above Sharing | Files sent to you sit above your own share list, in both themes | ☐ |
 | Four devices in a room | Peer lines read Mac / Mac 2 / Mac 3 — no two devices share a label | ☐ |
@@ -148,9 +167,10 @@ npm run typecheck && npm test && npm run build
 | Path over mobile data | A phone off Wi-Fi reads "Internet" on both devices | ☐ |
 | Path while connecting | No label at all until the path is known — never a guess | ☐ |
 | Meta line on a phone | Size, sender and network all readable; no stray separator dots | ☐ |
+| Meta line after a peer drops | Network label goes, and its separator dot goes with it | ☐ |
 | Contrast, light theme | Meta text, status colours and the accent all pass AA | ☐ |
 | Contrast, dark theme | Same, including the focus ring against adjacent borders | ☐ |
-| Reduced motion | No width animation, no chevron spin, no button press travel | ☐ |
+| Reduced motion | No width animation, no chevron spin, no button press travel, no travelling dashes on the route — and the route still reads as solid vs dashed | ☐ |
 | Small download (Firefox) | No persistent-storage prompt for a file under 128 MB | ☐ |
 | Large download (Firefox) | Prompts once for a file over 128 MB, and not again that page | ☐ |
 | Refused persistence | Declining the prompt still lets the transfer run to completion | ☐ |

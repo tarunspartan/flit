@@ -71,6 +71,17 @@ export class ReceiveTransfer {
   lastActivity = Date.now()
   capacity: CapacityCheck | null = null
 
+  /**
+   * When the peer was *first* seen to go, cleared once bytes flow again.
+   *
+   * The reconnect window used to be measured from `lastActivity`, which every
+   * reappearance refreshed — so a peer that flapped kept resetting the clock
+   * and the transfer could sit in RECONNECTING indefinitely instead of failing.
+   * Measuring from the first sign of trouble bounds it however often the link
+   * bounces.
+   */
+  #lostAt: number | null = null
+
   #link: PeerLink
   #onChange: () => void
   #prefs: StoragePreferences
@@ -252,6 +263,11 @@ export class ReceiveTransfer {
     if (this.#hasher.has(index)) return
 
     this.lastActivity = Date.now()
+    // A chunk landing is the only unambiguous evidence the link is working
+    // again — asking to resume is not, because the request itself can fail into
+    // a dead link. So this, and not `#sendResumePoint`, is what ends the
+    // reconnect window.
+    this.#lostAt = null
     this.#enqueueWrite(index, payload)
   }
 
@@ -375,12 +391,30 @@ export class ReceiveTransfer {
   onPeerLost(): void {
     if (isTerminal(this.state) || this.state === 'WAITING_FOR_ACCEPT') return
     this.#speed.reset()
+    this.#lostAt ??= Date.now()
     this.#transition('RECONNECTING')
   }
 
+  /**
+   * Either end may now restart a transfer.
+   *
+   * The sender still drives resume when *it* saw the drop. But a drop is
+   * routinely noticed by only one side — the other's connection can sit in the
+   * roster looking healthy — and when that side was the sender, nobody ever
+   * sent `TRANSFER_RESUME` and the receiver waited for a message that could not
+   * arrive. So the end that noticed says so, whichever end that is.
+   *
+   * Sending our checkpoint is the whole negotiation: `TRANSFER_ACCEPT{fromChunk}`
+   * is what the sender acts on either way. If both ends noticed, the sender
+   * simply gets it twice, and `#onAccept` treats the second identically to the
+   * first — rewind to the same chunk and pump.
+   */
   onPeerRestored(): void {
-    // The sender drives resume negotiation; we answer its TRANSFER_RESUME.
-    if (this.state === 'RECONNECTING') this.lastActivity = Date.now()
+    if (this.state !== 'RECONNECTING') return
+    this.lastActivity = Date.now()
+    // No store means consent never happened, so there is nothing to resume —
+    // `#onResumeRequest` puts that case back in front of the user instead.
+    if (this.#store) void this.#sendResumePoint()
   }
 
   /**
@@ -401,10 +435,13 @@ export class ReceiveTransfer {
 
   checkStall(now = Date.now()): void {
     if (!['TRANSFERRING', 'RECONNECTING', 'VERIFYING'].includes(this.state)) return
-    const limit =
-      this.state === 'RECONNECTING' ? TIMEOUTS.reconnectWindowMs : TIMEOUTS.transferStallMs
-    if (now - this.lastActivity > limit) {
-      this.#fail(new AppError(this.state === 'RECONNECTING' ? 'connection-lost' : 'transfer-stalled'))
+    const reconnecting = this.state === 'RECONNECTING'
+    const limit = reconnecting ? TIMEOUTS.reconnectWindowMs : TIMEOUTS.transferStallMs
+    // While reconnecting, measure from the first drop rather than the last sign
+    // of life, so a flapping peer cannot hold the transfer open forever.
+    const since = reconnecting ? (this.#lostAt ?? this.lastActivity) : this.lastActivity
+    if (now - since > limit) {
+      this.#fail(new AppError(reconnecting ? 'connection-lost' : 'transfer-stalled'))
       void this.#store?.abort()
     }
   }

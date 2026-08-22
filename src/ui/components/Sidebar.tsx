@@ -165,6 +165,10 @@ function Settings({state, onDismiss}: {state: SessionSnapshot; onDismiss: () => 
         <span className="field__label">Device name</span>
         <input
           className="field__input"
+          name="deviceName"
+          // Not an identity field, so keep password managers away from it.
+          autoComplete="off"
+          spellCheck={false}
           value={name}
           maxLength={32}
           onChange={event => setName(event.target.value)}
