@@ -2288,12 +2288,48 @@ button {
   color: var(--wire);
 }
 
-/* A fixed share of the width rather than each name taking what it needs, so
-   the endpoint dots land in a column instead of stopping wherever the previous
-   device's name happened to end. Sized so three names still read at 320px;
-   past three the names fold into the roster and the legs carry on alone. */
+/* The drawn half of a leg: wire, any relay marker, and the endpoint dot. */
+.route__track {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+/*
+ * Named legs share one name column, sized to the longest name.
+ *
+ * A fixed share of the width lined the endpoint dots up, but reserved the same
+ * space whatever the names were — two names of thirteen characters left 81px of
+ * nothing between them and the card edge. A grid gives the same alignment for
+ * free, because every row draws from one column definition, and `max-content`
+ * makes that column exactly as wide as the longest label needs.
+ */
+.route--named .route__legs {
+  display: grid;
+  /*
+   * The name column takes what it needs, up to a little over half the row. A
+   * bare `max-content` let a long device name — they can run to 32 characters —
+   * squeeze the line down to its 16px minimum, and at that width its texture is
+   * unreadable. The texture is the whole signal, so the line keeps its share
+   * and an unusually long name ellipsises instead.
+   */
+  grid-template-columns: minmax(0, 1fr) fit-content(55%);
+  align-items: center;
+  column-gap: 0;
+  row-gap: 7px;
+}
+
+/* The leg itself draws nothing; its two halves are the grid's cells. It stays
+   in the tree, so the kind's --wire and --ink still inherit into them. */
+.route--named .route__leg {
+  display: contents;
+}
+
+/* Sits in the grid's second column, so every name starts at the same x and the
+   dots before them line up — without reserving width no name uses. */
 .route__leg-name {
-  flex: 0 0 38%;
+  min-width: 0;
   padding-left: 9px;
   overflow: hidden;
   text-overflow: ellipsis;

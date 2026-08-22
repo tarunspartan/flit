@@ -40,12 +40,17 @@ export function Route({state, onOpenDevices}: {state: SessionSnapshot; onOpenDev
         <span className="route__legs">
           {view.legs.map(leg => (
             <span key={leg.id} className={`route__leg route__leg--${leg.kind}`}>
-              <span className="route__wire" />
-              {/* Drawn only for a relay, and drawn in the middle, because that
-                  is where the server actually sits. */}
-              {leg.kind === 'relay' && <span className="route__via" />}
-              {leg.kind === 'relay' && <span className="route__wire" />}
-              <span className={`route__dot ${leg.open ? 'route__dot--open' : ''}`} />
+              {/* The drawn part is one element so that a named leg has exactly
+                  two children: the line, and the label. That is what lets every
+                  row share a single name column sized to the longest name. */}
+              <span className="route__track">
+                <span className="route__wire" />
+                {/* Drawn only for a relay, and drawn in the middle, because
+                    that is where the server actually sits. */}
+                {leg.kind === 'relay' && <span className="route__via" />}
+                {leg.kind === 'relay' && <span className="route__wire" />}
+                <span className={`route__dot ${leg.open ? 'route__dot--open' : ''}`} />
+              </span>
               {view.named && <span className="route__leg-name">{leg.name}</span>}
             </span>
           ))}

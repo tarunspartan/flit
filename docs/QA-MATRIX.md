@@ -159,6 +159,8 @@ npm run typecheck && npm test && npm run build
 | Incoming above Sharing | Files sent to you sit above your own share list, in both themes | ☐ |
 | Four devices in a room | Peer lines read Mac / Mac 2 / Mac 3 — no two devices share a label | ☐ |
 | Four devices, phone width | No horizontal overflow; no state or percentage clipped | ☐ |
+| Named legs, short names | Names reach the right edge — no reserved space they don't use | ☐ |
+| Named legs, a 30-character name | Name ellipsises; the line keeps enough width to read its texture | ☐ |
 | Multi-device shared card | One line per device, names and states in aligned columns | ☐ |
 | Mixed states on one file | A cancelled line's state sits in the same column as a transferring one's | ☐ |
 | Queued label | Reads "Queued" with no position number | ☐ |
