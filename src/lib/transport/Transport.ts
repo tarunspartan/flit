@@ -28,7 +28,7 @@ export const UNKNOWN_PATH: NetworkPath = {
 }
 
 /**
- * Which peers should be reported as gone, judged from their own connections.
+ * Whether a connection is dead, judged from its own state.
  *
  * Trystero announces a peer leaving over the relay, which only works when the
  * other end is still in a position to say so. A browser that was killed, slept,
@@ -39,37 +39,16 @@ export const UNKNOWN_PATH: NetworkPath = {
  *
  * Only terminal states count. `failed` and `closed` are states WebRTC never
  * spontaneously returns from, so acting on them cannot produce a false
- * positive. Absence from the room map deliberately does *not* count: Trystero
- * fires its own leave event for that, and treating a missing id as death races
- * with joining — a peer is added to `#paths` and polled before Trystero's map
- * has caught up, which would report a brand-new peer dead on arrival.
+ * positive. 'disconnected' is deliberately excluded: WebRTC uses it for a
+ * transient blip that routinely recovers. And a state not known yet — a
+ * connection polled before it has one — is not death either; treating it so
+ * once reported brand-new peers dead on arrival.
  *
- * Pure so it can be tested; the adapter owns the polling and the emitting.
- *
- * @param states   peer id → connection state, for everyone in the room
- * @param reported peers already announced gone; mutated to stay in step
+ * Reporting each death once is LinkTable's job: a connection is forgotten the
+ * moment it is reported.
  */
-export function deadLinks(
-  states: Map<PeerId, RTCPeerConnectionState | undefined>,
-  reported: Set<PeerId>
-): PeerId[] {
-  const gone: PeerId[] = []
-
-  for (const [peerId, state] of states) {
-    // 'disconnected' is deliberately excluded: WebRTC uses it for a transient
-    // blip that routinely recovers. Only states it never returns from count.
-    if (state === 'failed' || state === 'closed') {
-      if (!reported.has(peerId)) {
-        reported.add(peerId)
-        gone.push(peerId)
-      }
-    } else {
-      // A peer that came back can be reported gone again later.
-      reported.delete(peerId)
-    }
-  }
-
-  return gone
+export function isDeadConnection(state: RTCPeerConnectionState | undefined): boolean {
+  return state === 'failed' || state === 'closed'
 }
 
 export interface TransportEvents extends Record<string, unknown> {
@@ -85,8 +64,17 @@ export interface Transport {
   readonly selfId: string
   join(code: string): Promise<void>
   leave(): Promise<void>
-  sendControl(peerId: PeerId, message: unknown): Promise<void>
+  /**
+   * Sends a control message. With `afterChunks`, it is delivered behind every
+   * chunk already sent to that peer rather than possibly overtaking them —
+   * control and file data otherwise travel separately, so nothing queues
+   * behind a large file.
+   */
+  sendControl(peerId: PeerId, message: unknown, options?: {afterChunks?: boolean}): Promise<void>
+  /** Resolves once the frame is queued on the connection; rejects if it cannot be. */
   sendChunk(peerId: PeerId, frame: Uint8Array): Promise<void>
+  /** The largest frame the connection to this peer carries as one message. */
+  maxFrameBytes(peerId: PeerId): number
   pathFor(peerId: PeerId): NetworkPath
   peers(): PeerId[]
   /**
@@ -96,6 +84,15 @@ export interface Transport {
    * and kept the whole module off the seam.
    */
   signalingReady(): boolean
+  /**
+   * Asks the transport to look for peers harder than it does by default.
+   *
+   * The session calls it when a device it expects cannot be found: a guest
+   * that has met nobody, or a peer that dropped and has not come back. What
+   * that means is the adapter's business — for Trystero, turning the backup
+   * signaling network from listening to announcing. Idempotent.
+   */
+  widenSearch(): void
   on<K extends keyof TransportEvents>(
     event: K,
     listener: (payload: TransportEvents[K]) => void

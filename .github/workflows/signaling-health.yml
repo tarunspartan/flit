@@ -1,0 +1,36 @@
+name: Signaling health
+
+# Pairing depends on public nostr relays and MQTT brokers that nobody here
+# runs. They go dark without notice, and pairing then fails "sometimes" for
+# reasons no test in this repo can see. This checks each pinned endpoint with a
+# real publish-and-receive round trip every day, and fails — which notifies
+# whoever last edited this schedule — when one needs replacing in
+# src/lib/core/config.ts.
+#
+# GitHub pauses scheduled workflows after 60 days without repository activity;
+# re-enable it from the Actions tab if that happens.
+
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Round-trip every relay and broker
+        run: npm run check:signaling

@@ -96,6 +96,11 @@ export class FileSystemStore implements ReceiverStore {
     // abort() discards the swap file, so no half-written file is left behind.
     await this.#writable.abort().catch(() => {})
   }
+
+  /** A finished file is the user's, where they chose to put it; only an unfinished one is discarded. */
+  async release(): Promise<void> {
+    await this.abort()
+  }
 }
 
 function extensionOf(filename: string): string[] {

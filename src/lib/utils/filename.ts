@@ -45,12 +45,14 @@ function truncateFilename(name: string, maxBytes = MAX_LENGTH): string {
   const extBytes = encoder.encode(ext).byteLength
   const budget = Math.max(1, maxBytes - extBytes)
 
-  let stem = dot > 0 ? name.slice(0, dot) : name
-  while (encoder.encode(stem).byteLength > budget) {
-    // Slice by code point so we never split a surrogate pair.
-    stem = [...stem].slice(0, -1).join('')
+  // Trimmed by code point so a surrogate pair is never split, counting bytes as
+  // it goes rather than re-encoding the whole stem for every character removed.
+  const chars = [...(dot > 0 ? name.slice(0, dot) : name)]
+  let bytes = encoder.encode(chars.join('')).byteLength
+  while (bytes > budget && chars.length > 0) {
+    bytes -= encoder.encode(chars.pop()).byteLength
   }
-  return `${stem}${ext}` || 'file'
+  return `${chars.join('')}${ext}` || 'file'
 }
 
 /** `report.pdf` → `report (2).pdf` when the name is already taken. */

@@ -19,7 +19,7 @@ npm run typecheck && npm test && npm run build
 
 | Check | Status |
 |---|---|
-| 89 unit, session and end-to-end protocol tests pass | ☐ |
+| 147 unit, session, transport and end-to-end protocol tests pass | ☐ |
 | Production build succeeds | ☐ |
 | No type errors | ☐ |
 
@@ -28,14 +28,14 @@ npm run typecheck && npm test && npm run build
 | Scenario | Expected | Status |
 |---|---|---|
 | Same Wi-Fi (IPv4) | Connects; path shows **Direct P2P · Local network** | ☐ |
-| Same Wi-Fi (IPv6-enabled network) | Still reads **Local network**, not Internet | ☐ |
+| Same Wi-Fi (IPv6-enabled network) | Still reads **Local network**, not Internet — including when ICE picks a reflexive IPv6 candidate | ☐ |
 | Different Wi-Fi networks | Connects directly, or fails with a clear explanation | ☐ |
 | Wi-Fi → cellular | Connects, or fails with a clear explanation | ☐ |
 | Cellular → Wi-Fi | Connects | ☐ |
 | Direct connection impossible (symmetric NAT) | Clear failure explaining no relay exists, no hang | ☐ |
 | Weak Wi-Fi | Transfer slows but completes | ☐ |
-| Network switch mid-transfer | Reconnects and resumes from checkpoint, does not restart | ☐ |
-| Local-network-only mode, same Wi-Fi | Connects | ☐ |
+| Network switch mid-transfer | Reconnects and resends only the chunks the receiver lacks | ☐ |
+| Local-network-only mode, same Wi-Fi | Connects; toggling it reconnects at once and keeps everything shared | ☐ |
 | Local-network-only mode, different networks | Fails visibly, never leaves the LAN | ☐ |
 
 ## Session and room
@@ -89,7 +89,10 @@ npm run typecheck && npm test && npm run build
 | Receiver storage exhaustion | Clear "not enough storage", not a crash | ☐ |
 | Storage warning before accept | Shown when the file is close to free space | ☐ |
 | Finalization failure | Distinguished from a network failure in the message | ☐ |
-| Disconnect at 50% | Resumes from checkpoint; does not restart | ☐ |
+| Disconnect at 50% | Resumes; bytes sent after the drop ≈ what the receiver lacked, not the rest of the file | ☐ |
+| Blip before anyone presses Download | The offer survives; Download minutes later still works | ☐ |
+| Source file deleted mid-send | Both ends say "Couldn't read the file" at once — not "connection lost" minutes later | ☐ |
+| Very large save to a chosen location | A slow final save does not fail as "stopped responding" | ☐ |
 | Only one end notices the drop | The end that noticed restarts it; no deadlock | ☐ |
 | Peer killed outright (no clean leave) | Other devices mark it away within a poll, not never | ☐ |
 | Peer flaps repeatedly | Reconnect still gives up on time, measured from the first drop | ☐ |
@@ -145,9 +148,9 @@ npm run typecheck && npm test && npm run build
 | Newest first | The drop you just made is at the top of Sharing and Incoming | ☐ |
 | Order inside a group | Files stay in the order picked; the running one does not move to the end | ☐ |
 | Show / Hide alignment | Sits on the summary's line, and stays there once a transfer starts | ☐ |
-| Download all | Starts one and queues the rest — never several at once | ☐ |
+| Download all | Small files run up to four at a time; a large file runs alone; the rest show Queued | ☐ |
 | Batch progress | Counts up "3 of 5 downloaded"; the group moves to Received when all are done | ☐ |
-| Accept several downloads | One runs, the rest show Queued and start in turn | ☐ |
+| Accept several downloads | Large ones run one at a time, in the order accepted; small ones never jump a large one | ☐ |
 | Back a queued download out | "Not now" returns it to Download, and it can be taken later | ☐ |
 | Cancel the running download | Stops it; the next queued file starts | ☐ |
 | Receiving wording | The receiving device says "Receiving", not "Sending" | ☐ |
@@ -185,8 +188,14 @@ npm run typecheck && npm test && npm run build
 | Scenario | Expected | Status |
 |---|---|---|
 | Screen locks mid-transfer | Wake lock holds the screen on while bytes are moving | ☐ |
-| Peer stuck on "Reconnecting" | "Reconnect now" appears and restores the room without losing the code | ☐ |
+| Peer stuck on "Reconnecting" | "Reconnect now" appears and restores the room without losing the code, the shared files, or transfers in flight | ☐ |
+| Share 450 files at once | All 450 appear on the other device | ☐ |
+| An offer nobody accepts | Screen is not held awake by it | ☐ |
+| Mixed versions in one room | An older build and this one send to each other in both directions | ☐ |
+| Two tabs, one received file each | Reloading or opening a tab never deletes the other tab's file | ☐ |
 | One signaling relay refuses | Pairing still works; no lasting "Couldn't connect" banner | ☐ |
+| Every nostr relay unreachable | A guest still finds the host within ~10 s, over the MQTT brokers | ☐ |
+| Both signaling networks working | Each device appears once in the roster, not twice | ☐ |
 | Network switch with no peers | Silent for 10s, then "Reconnecting…", only then "Can't reach the internet" | ☐ |
 
 ## Browser results

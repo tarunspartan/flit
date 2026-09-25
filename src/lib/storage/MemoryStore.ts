@@ -32,18 +32,23 @@ export class MemoryStore implements ReceiverStore {
   }
 
   async write(offset: number, data: Bytes): Promise<void> {
-    // Copy: the caller's view points into a transport buffer that gets reused.
-    this.#parts.set(offset, data.slice())
+    // Kept as given: a store owns what it is handed (see ReceiverStore.write).
+    this.#parts.set(offset, data)
   }
 
   async flush(): Promise<void> {}
 
   async finalize(): Promise<FinalizeResult> {
     const ordered = [...this.#parts.entries()].sort((a, b) => a[0] - b[0]).map(([, part]) => part)
+    this.#parts.clear()
     return {saved: false, blob: new Blob(ordered as BlobPart[], {type: this.#mimeType})}
   }
 
   async abort(): Promise<void> {
+    this.#parts.clear()
+  }
+
+  async release(): Promise<void> {
     this.#parts.clear()
   }
 }

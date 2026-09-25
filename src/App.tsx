@@ -19,9 +19,12 @@ export function App() {
   const dragging = useWindowDrop(state.status === 'open')
   const update = useAppUpdate()
   const install = useInstallPrompt()
-  const busy = session.hasActiveTransfers()
-  useUnloadGuard(busy)
-  useWakeLock(busy)
+  // Two different questions. Closing the page would lose a transfer, or a file
+  // shared from here that nobody has taken yet — worth a prompt. Keeping the
+  // screen on is only worth it while bytes are actually moving: an offer can
+  // wait for hours, and it used to hold both phones awake the whole time.
+  useUnloadGuard(session.hasUnfinishedWork())
+  useWakeLock(session.hasMovingTransfers())
 
   return (
     <div className="app">

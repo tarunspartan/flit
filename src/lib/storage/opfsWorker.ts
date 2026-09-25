@@ -1,36 +1,39 @@
 /// <reference lib="webworker" />
 /**
- * OPFS writer worker.
+ * OPFS writer worker — one per page, serving every file being received.
  *
  * Sync access handles are the most broadly supported OPFS write path (Chrome,
  * Firefox, and Safari including iOS) and they must run off the main thread.
  * Writing here also keeps disk I/O from competing with the render loop during
- * a multi-gigabyte transfer.
+ * a multi-gigabyte transfer. One worker for all files, rather than one each,
+ * because a batch of a hundred photos used to start and stop a hundred workers.
  */
 
-export const OPFS_DIR = 'flit-incoming'
+type WorkerRequest =
+  | {id: number; op: 'open'; file: number; dir: string[]; name: string}
+  | {id: number; op: 'write'; file: number; offset: number; data: ArrayBuffer; byteOffset: number; byteLength: number}
+  | {id: number; op: 'flush'; file: number}
+  | {id: number; op: 'finalize'; file: number}
+  | {id: number; op: 'abort'; file: number}
+  | {id: number; op: 'remove'; file: number}
 
-type Request =
-  | {id: number; op: 'open'; name: string}
-  | {id: number; op: 'write'; offset: number; data: ArrayBuffer}
-  | {id: number; op: 'flush'}
-  | {id: number; op: 'finalize'}
-  | {id: number; op: 'abort'}
-  | {id: number; op: 'purge'}
-
-type Response =
+type WorkerResponse =
   | {id: number; ok: true; file?: File}
   | {id: number; ok: false; error: string}
 
-let dir: FileSystemDirectoryHandle | null = null
-let fileHandle: FileSystemFileHandle | null = null
-let access: FileSystemSyncAccessHandle | null = null
-let openName = ''
+interface OpenFile {
+  dir: FileSystemDirectoryHandle
+  name: string
+  handle: FileSystemFileHandle
+  access: FileSystemSyncAccessHandle | null
+}
 
-async function getDir(): Promise<FileSystemDirectoryHandle> {
-  dir ??= await (await navigator.storage.getDirectory()).getDirectoryHandle(OPFS_DIR, {
-    create: true
-  })
+const files = new Map<number, OpenFile>()
+
+/** Walks (and creates) a directory path from the OPFS root. */
+async function directory(path: string[]): Promise<FileSystemDirectoryHandle> {
+  let dir = await navigator.storage.getDirectory()
+  for (const name of path) dir = await dir.getDirectoryHandle(name, {create: true})
   return dir
 }
 
@@ -38,86 +41,79 @@ async function getDir(): Promise<FileSystemDirectoryHandle> {
  * Older Safari shipped these methods returning promises before the spec settled
  * on synchronous returns. Awaiting covers both.
  */
-async function closeAccess(): Promise<void> {
+async function closeAccess(entry: OpenFile): Promise<void> {
+  const access = entry.access
   if (!access) return
-  const handle = access
-  access = null
+  entry.access = null
   try {
-    await handle.flush()
+    await access.flush()
   } catch {
     // A failed flush still requires the close below to release the lock.
   }
-  await handle.close()
+  await access.close()
 }
 
-async function handle(req: Request): Promise<{file?: File}> {
+function opened(file: number): OpenFile {
+  const entry = files.get(file)
+  if (!entry) throw new Error('no open file')
+  return entry
+}
+
+async function handle(req: WorkerRequest): Promise<{file?: File}> {
   switch (req.op) {
     case 'open': {
-      await closeAccess()
-      const directory = await getDir()
-      openName = req.name
-      fileHandle = await directory.getFileHandle(openName, {create: true})
-      access = await fileHandle.createSyncAccessHandle()
-      // Start from a clean slate: a retried transfer reuses the same name.
+      const dir = await directory(req.dir)
+      const handle = await dir.getFileHandle(req.name, {create: true})
+      const access = await handle.createSyncAccessHandle()
+      // Start from a clean slate, whatever an earlier attempt left there.
       await access.truncate(0)
+      files.set(req.file, {dir, name: req.name, handle, access})
       return {}
     }
 
     case 'write': {
-      if (!access) throw new Error('no open file')
-      await access.write(new Uint8Array(req.data), {at: req.offset})
+      const {access} = opened(req.file)
+      if (!access) throw new Error('file already closed')
+      await access.write(new Uint8Array(req.data, req.byteOffset, req.byteLength), {at: req.offset})
       return {}
     }
 
     case 'flush': {
-      if (!access) throw new Error('no open file')
+      const {access} = opened(req.file)
+      if (!access) throw new Error('file already closed')
       await access.flush()
       return {}
     }
 
     case 'finalize': {
-      if (!fileHandle) throw new Error('no open file')
+      const entry = opened(req.file)
       // The lock must be released before the file can be read back.
-      await closeAccess()
-      return {file: await fileHandle.getFile()}
+      await closeAccess(entry)
+      return {file: await entry.handle.getFile()}
     }
 
-    case 'abort': {
-      await closeAccess()
-      if (openName) {
-        const directory = await getDir()
-        await directory.removeEntry(openName).catch(() => {})
-      }
-      fileHandle = null
-      openName = ''
-      return {}
-    }
-
-    case 'purge': {
-      // Removes leftovers from a previous session that ended abruptly.
-      await closeAccess()
-      const root = await navigator.storage.getDirectory()
-      await root.removeEntry(OPFS_DIR, {recursive: true}).catch(() => {})
-      dir = null
-      fileHandle = null
-      openName = ''
+    case 'abort':
+    case 'remove': {
+      const entry = files.get(req.file)
+      if (!entry) return {}
+      files.delete(req.file)
+      await closeAccess(entry)
+      await entry.dir.removeEntry(entry.name).catch(() => {})
       return {}
     }
   }
 }
 
-self.onmessage = async (event: MessageEvent<Request>) => {
+self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const req = event.data
+  let response: WorkerResponse
   try {
-    const result = await handle(req)
-    const response: Response = {id: req.id, ok: true, ...result}
-    self.postMessage(response)
+    response = {id: req.id, ok: true, ...(await handle(req))}
   } catch (err) {
-    const response: Response = {
-      id: req.id,
-      ok: false,
-      error: err instanceof Error ? err.message : String(err)
-    }
-    self.postMessage(response)
+    response = {id: req.id, ok: false, error: err instanceof Error ? err.message : String(err)}
   }
+  self.postMessage(response)
 }
+
+// A module, so these declarations stay out of the global scope.
+export {}

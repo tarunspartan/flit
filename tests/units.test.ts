@@ -1,15 +1,19 @@
 import {afterEach, describe, expect, it, vi} from 'vitest'
+import {LIMITS} from '../src/lib/core/config.ts'
 import {formatCode, isValidCode, normalizeCode, randomCode, deriveRoomTopic} from '../src/lib/core/ids.ts'
 import {ChunkTreeHasher} from '../src/lib/integrity/hash.ts'
-import {decodeChunk, encodeChunk, FRAME_HEADER_BYTES} from '../src/lib/protocol/frame.ts'
+import {chunkSizeFor, decodeChunk, encodeChunk, FRAME_HEADER_BYTES} from '../src/lib/protocol/frame.ts'
 import {MessageRateLimiter, parseControl} from '../src/lib/protocol/validate.ts'
 import {PROTOCOL_VERSION} from '../src/lib/protocol/messages.ts'
 import {canTransition, isTerminal} from '../src/lib/transfer/states.ts'
+import {ChunkPlan} from '../src/lib/transfer/ChunkPlan.ts'
 import {FlowController} from '../src/lib/transfer/FlowController.ts'
+import {keepIfSame} from '../src/lib/utils/stable.ts'
 import {sanitizeFilename, sanitizeRelativePath, uniqueFilename} from '../src/lib/utils/filename.ts'
 import {SpeedMeter} from '../src/lib/utils/speed.ts'
 import {agreeKind, bandwidthCost, classifyPath, isPrivate, sameSubnet, steadyPath} from '../src/lib/transport/pathClassifier.ts'
-import {deadLinks} from '../src/lib/transport/Transport.ts'
+import {isDeadConnection} from '../src/lib/transport/Transport.ts'
+import {LinkTable} from '../src/lib/transport/LinkTable.ts'
 import {formatBytes, formatDuration} from '../src/lib/utils/format.ts'
 import {takeSharedFiles} from '../src/lib/utils/shareTarget.ts'
 import {checkCapacity} from '../src/lib/storage/estimate.ts'
@@ -171,11 +175,31 @@ describe('protocol validation', () => {
   })
 
   it('rate limits a flooding peer', () => {
-    const limiter = new MessageRateLimiter(10)
+    const limiter = new MessageRateLimiter(10, 20)
     let allowed = 0
     for (let i = 0; i < 100; i++) if (limiter.allow(1000)) allowed++
-    expect(allowed).toBeLessThan(100)
-    expect(allowed).toBeGreaterThan(0)
+    expect(allowed).toBe(20)
+  })
+
+  it('admits a whole session of offers arriving at once', () => {
+    // A device joining late is offered every shared file in one go. The old
+    // burst of 400 silently dropped the rest, so those files never appeared.
+    const limiter = new MessageRateLimiter()
+    let allowed = 0
+    for (let i = 0; i < LIMITS.maxFilesPerSession; i++) if (limiter.allow(1000)) allowed++
+    expect(allowed).toBe(LIMITS.maxFilesPerSession)
+  })
+
+  it('accepts a well-formed list of missing ranges and rejects a bad one', () => {
+    const accept = {v: PROTOCOL_VERSION, t: 'TRANSFER_ACCEPT', transferId: 'abc', fromChunk: 2}
+    expect(parseControl({...accept, missing: [[2, 3], [5, 9]]}).ok).toBe(true)
+    expect(parseControl({...accept, missing: []}).ok).toBe(true)
+    // Overlapping, descending, empty, and non-numeric ranges are all refused.
+    expect(parseControl({...accept, missing: [[2, 6], [5, 9]]}).ok).toBe(false)
+    expect(parseControl({...accept, missing: [[5, 9], [2, 3]]}).ok).toBe(false)
+    expect(parseControl({...accept, missing: [[4, 4]]}).ok).toBe(false)
+    expect(parseControl({...accept, missing: [['a', 3]]}).ok).toBe(false)
+    expect(parseControl({...accept, missing: Array.from({length: 300}, (_, i) => [i * 2, i * 2 + 1])}).ok).toBe(false)
   })
 })
 
@@ -234,14 +258,30 @@ describe('chunk tree hashing', () => {
     expect(hasher.contiguousCount()).toBe(4)
   })
 
-  it('drops digests above a resume point', async () => {
-    const hasher = new ChunkTreeHasher(300, 100, 3)
+  it('lists exactly the missing chunks as ranges', async () => {
+    const hasher = new ChunkTreeHasher(1000, 100, 10)
+    for (const index of [0, 1, 4, 5, 8]) await hasher.add(index, bytes(100, index))
+    expect(hasher.missingRanges(16)).toEqual([[2, 4], [6, 8], [9, 10]])
+    // Chunks already on their way in are not asked for again.
+    expect(hasher.missingRanges(16, index => index === 2 || index === 9)).toEqual([[3, 4], [6, 8]])
+  })
+
+  it('folds gaps past the range limit into one open-ended range', async () => {
+    const hasher = new ChunkTreeHasher(1000, 100, 10)
+    for (const index of [1, 3, 5, 7]) await hasher.add(index, bytes(100, index))
+    // Gaps at 0, 2, 4, 6, 8-9. With room for three, the third runs to the end:
+    // it re-requests 5 and 7, but can never leave a missing chunk out.
+    expect(hasher.missingRanges(3)).toEqual([[0, 1], [2, 3], [4, 10]])
+  })
+
+  it('reuses the root until a digest changes', async () => {
+    const hasher = new ChunkTreeHasher(200, 100, 2)
     await hasher.add(0, bytes(100, 1))
     await hasher.add(1, bytes(100, 2))
-    hasher.truncateTo(1)
-    expect(hasher.has(0)).toBe(true)
-    expect(hasher.has(1)).toBe(false)
-    expect(hasher.contiguousCount()).toBe(1)
+    const first = hasher.root()
+    expect(hasher.root()).toBe(first)
+    await hasher.add(1, bytes(100, 3))
+    expect(await hasher.root()).not.toBe(await first)
   })
 
   it('handles an empty file', async () => {
@@ -275,7 +315,76 @@ describe('transfer state machine', () => {
   })
 })
 
+describe('chunk plans', () => {
+  const drain = (plan: ChunkPlan) => {
+    const out: number[] = []
+    for (let index = plan.take(); index !== null; index = plan.take()) out.push(index)
+    return out
+  }
+
+  it('walks exactly the requested ranges', () => {
+    expect(drain(ChunkPlan.fromAccept(0, 10, [[1, 3], [7, 9]]))).toEqual([1, 2, 7, 8])
+  })
+
+  it('falls back to everything from the resume point for an older receiver', () => {
+    expect(drain(ChunkPlan.fromAccept(7, 10))).toEqual([7, 8, 9])
+  })
+
+  it('clips ranges to the file and leaves out skipped chunks', () => {
+    const plan = ChunkPlan.fromAccept(0, 6, [[0, 99]], index => index === 2 || index === 3)
+    expect(drain(plan)).toEqual([0, 1, 4, 5])
+  })
+
+  it('counts the bytes it covers, including a short last chunk', () => {
+    // 2.5 chunks of 100 bytes: chunks 1 and 2 are 100 + 50 bytes.
+    expect(ChunkPlan.fromAccept(0, 3, [[1, 3]]).bytes(250, 100)).toBe(150)
+  })
+})
+
+describe('chunk sizing', () => {
+  it('fits a chunk and its header into one message', () => {
+    expect(chunkSizeFor(256 * 1024) + FRAME_HEADER_BYTES).toBeLessThanOrEqual(256 * 1024)
+    expect(chunkSizeFor(64 * 1024)).toBe(63 * 1024)
+  })
+
+  it('never exceeds the configured chunk size, nor goes absurdly small', () => {
+    expect(chunkSizeFor(1024 ** 3)).toBe(256 * 1024)
+    expect(chunkSizeFor(Number.POSITIVE_INFINITY)).toBe(256 * 1024)
+    expect(chunkSizeFor(undefined)).toBe(256 * 1024)
+    expect(chunkSizeFor(1000)).toBe(16 * 1024)
+  })
+})
+
+describe('stable views', () => {
+  it('keeps the previous object when nothing changed, looking one level in', () => {
+    const before = {a: 1, error: {code: 'x', message: 'm'}, list: [1, 2]}
+    const same = {a: 1, error: {code: 'x', message: 'm'}, list: [1, 2]}
+    expect(keepIfSame(before, same)).toBe(before)
+  })
+
+  it('takes the new object when any field changed', () => {
+    const before = {a: 1, error: {code: 'x'}}
+    const after = {a: 1, error: {code: 'y'}}
+    expect(keepIfSame(before, after)).toBe(after)
+    expect(keepIfSame(null, after)).toBe(after)
+  })
+})
+
 describe('flow control', () => {
+  it('drains without polling, once the last permit is back', async () => {
+    const flow = new FlowController(2)
+    await flow.acquire()
+    await flow.acquire()
+    let drained = false
+    const done = flow.drain().then(() => (drained = true))
+    flow.release()
+    await Promise.resolve()
+    expect(drained).toBe(false)
+    flow.release()
+    await done
+    expect(drained).toBe(true)
+  })
+
   it('bounds concurrent sends and releases waiters in order', async () => {
     const flow = new FlowController(2)
     await flow.acquire()
@@ -361,9 +470,15 @@ describe('network path classification', () => {
 /** A minimal stats report: RTCStatsReport is a Map as far as this code cares. */
 function fakePeer(
   local: Record<string, unknown>,
-  remote: Record<string, unknown>
+  remote: Record<string, unknown>,
+  /** Other candidates this device gathered, besides the selected one. */
+  alsoLocal: Record<string, unknown>[] = []
 ): RTCPeerConnection {
   const stats = new Map<string, Record<string, unknown>>([
+    ...alsoLocal.map((candidate, i): [string, Record<string, unknown>] => [
+      `L${i}`,
+      {type: 'local-candidate', id: `L${i}`, ...candidate}
+    ]),
     ['L', {type: 'local-candidate', id: 'L', ...local}],
     ['R', {type: 'remote-candidate', id: 'R', ...remote}],
     [
@@ -418,6 +533,43 @@ describe('both ends of one link agree on what it is', () => {
   it('does not guess local when mDNS hides one side and the other is public', async () => {
     const path = await classifyPath(
       fakePeer({candidateType: 'host', address: ''}, {candidateType: 'prflx', address: '203.0.113.9'})
+    )
+    expect(path.kind).toBe('direct')
+  })
+
+  it('reads a same-Wi-Fi IPv6 link as local, even through a reflexive candidate', async () => {
+    // IPv6 has no NAT: the "server-reflexive" address is the device's own, and
+    // ICE picks it over the mDNS host candidate. Seen live between two devices
+    // on one network, labelled "Internet" at a 0 ms round trip.
+    const path = await classifyPath(
+      fakePeer(
+        {candidateType: 'host', address: ''},
+        {candidateType: 'srflx', address: '2401:4900:88e1:b04c:a0bf:36ec:b565:63dc'},
+        [{candidateType: 'srflx', address: '2401:4900:88e1:b04c:1c2e:9f0:3a1:77'}]
+      )
+    )
+    expect(path.kind).toBe('local')
+  })
+
+  it('does not call a different IPv6 network local', async () => {
+    const path = await classifyPath(
+      fakePeer(
+        {candidateType: 'host', address: ''},
+        {candidateType: 'srflx', address: '2401:4900:88e1:b04c:a0bf:36ec:b565:63dc'},
+        [{candidateType: 'srflx', address: '2a02:1210:5e00:9f00::1'}]
+      )
+    )
+    expect(path.kind).toBe('direct')
+  })
+
+  it('never infers locality from a shared public IPv4 address', async () => {
+    // Two phones behind one carrier-grade NAT share a public IPv4 without
+    // sharing a network, so matching IPv4 reflexive addresses prove nothing.
+    const path = await classifyPath(
+      fakePeer(
+        {candidateType: 'srflx', address: '203.0.113.9'},
+        {candidateType: 'srflx', address: '203.0.113.9'}
+      )
     )
     expect(path.kind).toBe('direct')
   })
@@ -589,46 +741,69 @@ describe('files arriving from the OS share sheet', () => {
 })
 
 describe('noticing a link die without being told', () => {
-  const states = (entries: Record<string, RTCPeerConnectionState | undefined>) =>
-    new Map(Object.entries(entries))
-
-  it('reports a connection that will never come back', () => {
-    const reported = new Set<string>()
-    expect(deadLinks(states({a: 'failed', b: 'connected'}), reported)).toEqual(['a'])
+  it('counts a connection that will never come back', () => {
+    expect(isDeadConnection('failed')).toBe(true)
+    expect(isDeadConnection('closed')).toBe(true)
   })
 
   it('leaves a transient blip alone', () => {
     // 'disconnected' routinely recovers on its own; treating it as gone would
     // tear down healthy transfers on every hiccup.
-    const reported = new Set<string>()
-    expect(deadLinks(states({a: 'disconnected'}), reported)).toEqual([])
+    expect(isDeadConnection('disconnected')).toBe(false)
   })
 
-  it('never reports a peer merely absent from the room map', () => {
+  it('never counts a connection that has no state yet', () => {
     // Regression: absence used to count as death, which raced with joining —
     // a peer is polled the moment it is added locally, before Trystero's map
-    // has caught up, and a brand-new peer was reported dead on arrival. Only
-    // the connection's own terminal state counts now.
-    const reported = new Set<string>()
-    expect(deadLinks(states({}), reported)).toEqual([])
-    expect(deadLinks(states({fresh: undefined}), reported)).toEqual([])
-    expect(deadLinks(states({fresh: 'connecting'}), reported)).toEqual([])
-    expect(deadLinks(states({fresh: 'new'}), reported)).toEqual([])
+    // has caught up, and a brand-new peer was reported dead on arrival.
+    expect(isDeadConnection(undefined)).toBe(false)
+    expect(isDeadConnection('new')).toBe(false)
+    expect(isDeadConnection('connecting')).toBe(false)
+  })
+})
+
+describe('one device, several connections', () => {
+  // Signaling runs over two networks, so one device can be reached twice.
+
+  it('announces a device once, however many connections reach it', () => {
+    const links = new LinkTable<string>()
+    expect(links.add('phone', 'nostr')).toBe('arrived')
+    expect(links.add('phone', 'mqtt')).toBe('standby')
+    expect(links.peers()).toEqual(['phone'])
+    expect(links.active('phone')).toBe('nostr')
   })
 
-  it('announces each death once, not once per poll', () => {
-    const reported = new Set<string>()
-    const dead = states({a: 'failed'})
-    expect(deadLinks(dead, reported)).toEqual(['a'])
-    expect(deadLinks(dead, reported)).toEqual([])
-    expect(deadLinks(dead, reported)).toEqual([])
+  it('hands over to the standby when the connection in use goes', () => {
+    const links = new LinkTable<string>()
+    links.add('phone', 'nostr')
+    links.add('phone', 'mqtt')
+    expect(links.remove('phone', 'nostr')).toBe('switched')
+    expect(links.active('phone')).toBe('mqtt')
+    expect(links.remove('phone', 'mqtt')).toBe('departed')
+    expect(links.peers()).toEqual([])
   })
 
-  it('can report a peer that came back and died again', () => {
-    const reported = new Set<string>()
-    expect(deadLinks(states({a: 'failed'}), reported)).toEqual(['a'])
-    expect(deadLinks(states({a: 'connected'}), reported)).toEqual([])
-    expect(deadLinks(states({a: 'closed'}), reported)).toEqual(['a'])
+  it('says nothing when only a standby goes', () => {
+    const links = new LinkTable<string>()
+    links.add('phone', 'nostr')
+    links.add('phone', 'mqtt')
+    expect(links.remove('phone', 'mqtt')).toBe('none')
+    expect(links.active('phone')).toBe('nostr')
+  })
+
+  it('reports each death once, however often it is noticed', () => {
+    // The poll sees a dead connection, and Trystero may report it again later.
+    const links = new LinkTable<string>()
+    links.add('phone', 'nostr')
+    expect(links.remove('phone', 'nostr')).toBe('departed')
+    expect(links.remove('phone', 'nostr')).toBe('none')
+  })
+
+  it('can welcome back a device that went and came again', () => {
+    const links = new LinkTable<string>()
+    links.add('phone', 'nostr')
+    links.remove('phone', 'nostr')
+    expect(links.add('phone', 'nostr')).toBe('arrived')
   })
 })
 

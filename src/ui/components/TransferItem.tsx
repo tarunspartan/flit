@@ -1,4 +1,4 @@
-import {useState, type ReactNode} from 'react'
+import {memo, useState, type ReactNode} from 'react'
 import type {NetworkPath} from '../../lib/transport/Transport.ts'
 import type {SharedFileView, TransferView} from '../../lib/transfer/states.ts'
 import {isMoving, isQueued, isTerminal} from '../../lib/transfer/states.ts'
@@ -127,7 +127,7 @@ function Way({sending}: {sending: boolean}) {
 /* ------------------------------------------------------------------- cards */
 
 /** One dropped file, with a line per device it is going to. */
-export function SharedFile({file, paths}: {file: SharedFileView; paths: PathLookup}) {
+export const SharedFile = memo(function SharedFile({file, paths}: {file: SharedFileView; paths: PathLookup}) {
   const done = file.transfers.filter(transfer => transfer.state === 'COMPLETED').length
 
   return (
@@ -164,7 +164,7 @@ export function SharedFile({file, paths}: {file: SharedFileView; paths: PathLook
       <SharedBody file={file} paths={paths} />
     </li>
   )
-}
+})
 
 /**
  * Who this file is going to and how each of them is doing.
@@ -191,7 +191,7 @@ function SharedBody({file, paths}: {file: SharedFileView; paths: PathLookup}) {
 }
 
 /** How one device is doing with the file above it, and over what. */
-function PeerLine({transfer, path}: {transfer: TransferView; path: NetworkPath | undefined}) {
+const PeerLine = memo(function PeerLine({transfer, path}: {transfer: TransferView; path: NetworkPath | undefined}) {
   const {state} = transfer
 
   return (
@@ -226,10 +226,10 @@ function PeerLine({transfer, path}: {transfer: TransferView; path: NetworkPath |
       <RowActions transfer={transfer} sending />
     </li>
   )
-}
+})
 
 /** A file another device is offering to this one. */
-export function IncomingFile({transfer, path}: {transfer: TransferView; path: NetworkPath | undefined}) {
+export const IncomingFile = memo(function IncomingFile({transfer, path}: {transfer: TransferView; path: NetworkPath | undefined}) {
   const {state} = transfer
   const queued = isQueued(transfer)
 
@@ -274,7 +274,7 @@ export function IncomingFile({transfer, path}: {transfer: TransferView; path: Ne
       <IncomingBody transfer={transfer} path={path} />
     </li>
   )
-}
+})
 
 /**
  * Everything about a transfer below its name: storage advice, live progress
@@ -439,7 +439,7 @@ function CardActions({transfer}: {transfer: TransferView}) {
  * opened batch gets rows instead: what you need at a glance, plus whatever you
  * might actually act on. A file shared on its own still gets the card.
  */
-export function IncomingRow({transfer, path}: {transfer: TransferView; path?: NetworkPath}) {
+export const IncomingRow = memo(function IncomingRow({transfer, path}: {transfer: TransferView; path?: NetworkPath}) {
   const [open, setOpen] = useState(false)
   const {state} = transfer
   const queued = isQueued(transfer)
@@ -506,7 +506,7 @@ export function IncomingRow({transfer, path}: {transfer: TransferView; path?: Ne
       )}
     </li>
   )
-}
+})
 
 /**
  * A row's controls: the primary one keeps its label because it is the whole
@@ -558,7 +558,7 @@ function RowActions({transfer, sending = false}: {transfer: TransferView; sendin
  * their average rather than one line each — the per-device breakdown is worth a
  * card, and a card is what a file shared on its own gets.
  */
-export function SharedRow({file, paths}: {file: SharedFileView; paths: PathLookup}) {
+export const SharedRow = memo(function SharedRow({file, paths}: {file: SharedFileView; paths: PathLookup}) {
   const [open, setOpen] = useState(false)
   const total = file.transfers.length
   const sent = file.transfers.filter(transfer => transfer.state === 'COMPLETED').length
@@ -630,7 +630,7 @@ export function SharedRow({file, paths}: {file: SharedFileView; paths: PathLooku
       )}
     </li>
   )
-}
+})
 
 /* ----------------------------------------------------------------- details */
 

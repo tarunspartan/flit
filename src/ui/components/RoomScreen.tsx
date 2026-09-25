@@ -1,7 +1,7 @@
-import {useEffect, useRef, useState} from 'react'
+import {memo, useEffect, useRef, useState} from 'react'
 import QRCode from 'qrcode'
 import {LIMITS} from '../../lib/core/config.ts'
-import type {SessionSnapshot, SharedText} from '../../lib/session/SessionManager.ts'
+import type {PeerInfo, SessionSnapshot, SharedText} from '../../lib/session/SessionManager.ts'
 import type {SharedFileView, TransferView} from '../../lib/transfer/states.ts'
 import {isTerminal} from '../../lib/transfer/states.ts'
 import {asLink} from '../../lib/utils/text.ts'
@@ -30,9 +30,7 @@ export function RoomScreen({
   const running = groups.filter(group => group.items.some(file => !isTerminal(file.state)))
   const settled = groups.filter(group => group.items.every(file => isTerminal(file.state)))
   const sharing = groupByBatch(state.shared)
-  // Rebuilt each render on purpose: the path is what changes, and a memo keyed
-  // on the peer list would miss a link flipping from direct to relay.
-  const paths: PathLookup = new Map(state.peers.map(peer => [peer.id, peer.path]))
+  const paths = usePaths(state.peers)
   const hasContent = state.shared.length > 0 || state.incoming.length > 0
   // Counts both directions, because that is what cancelling all of them does.
   // Offered only past one: with a single transfer its own Cancel is right there,
@@ -235,6 +233,35 @@ function Pair({state}: {state: SessionSnapshot}) {
 }
 
 /**
+ * How each device is reachable, as one map that keeps its identity until a
+ * device's entry actually changes.
+ *
+ * The roster entries themselves are stable objects, so comparing them item by
+ * item is exact: a link flipping from direct to relay is a new entry, and a new
+ * map. Rebuilding the map on every render instead handed every memoized row a
+ * new prop several times a second, and re-rendered all of them.
+ */
+function usePaths(peers: PeerInfo[]): PathLookup {
+  const cache = useRef<{peers: PeerInfo[]; paths: PathLookup} | null>(null)
+  if (!cache.current || !sameItems(cache.current.peers, peers)) {
+    cache.current = {peers, paths: new Map(peers.map(peer => [peer.id, peer.path]))}
+  }
+  return cache.current.paths
+}
+
+function sameItems<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a.length === b.length && a.every((item, i) => item === b[i])
+}
+
+/** Batches are regrouped every render; unchanged ones are the same files in the same order. */
+function sameBatch<T>(
+  prev: {files: readonly T[]; paths: PathLookup},
+  next: {files: readonly T[]; paths: PathLookup}
+): boolean {
+  return prev.paths === next.paths && sameItems(prev.files, next.files)
+}
+
+/**
  * Things dropped together, kept together — newest batch first.
  *
  * Grouping is the sender's `batchId` rather than arrival time, so a device that
@@ -313,7 +340,7 @@ function BatchRail({done, total}: {done: number; total: number}) {
  * — a screen of scrolling for one action. The summary carries what there is to
  * know before opening it: how many, how big, how many have landed.
  */
-function SharedBatch({files, paths}: {files: SharedFileView[]; paths: PathLookup}) {
+const SharedBatch = memo(function SharedBatch({files, paths}: {files: SharedFileView[]; paths: PathLookup}) {
   const [open, setOpen] = useState(false)
   const bytes = files.reduce((total, file) => total + file.size, 0)
   // Sent means every device that was offered it has it. With no device in the
@@ -381,7 +408,7 @@ function SharedBatch({files, paths}: {files: SharedFileView[]; paths: PathLookup
       )}
     </li>
   )
-}
+}, sameBatch)
 
 /**
  * One drop arriving, folded into a single row until asked to open.
@@ -390,7 +417,7 @@ function SharedBatch({files, paths}: {files: SharedFileView[]; paths: PathLookup
  * before you have decided anything. The summary carries what the decision needs
  * — how many, how big, who from — and Download all is the usual answer.
  */
-function IncomingBatch({files, paths}: {files: TransferView[]; paths: PathLookup}) {
+const IncomingBatch = memo(function IncomingBatch({files, paths}: {files: TransferView[]; paths: PathLookup}) {
   const [open, setOpen] = useState(false)
   const bytes = files.reduce((total, file) => total + file.size, 0)
   const done = files.filter(file => file.state === 'COMPLETED').length
@@ -452,7 +479,7 @@ function IncomingBatch({files, paths}: {files: TransferView[]; paths: PathLookup
       )}
     </li>
   )
-}
+}, sameBatch)
 
 /**
  * A link or a note, which is often the thing you actually wanted to move.

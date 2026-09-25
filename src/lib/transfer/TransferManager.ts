@@ -1,17 +1,32 @@
-import {LIMITS} from '../core/config.ts'
+import {
+  LIMITS,
+  MAX_PARALLEL_SMALL_DOWNLOADS,
+  OFFERS_PER_SECOND,
+  SMALL_FILE_BYTES
+} from '../core/config.ts'
 import {Emitter} from '../core/events.ts'
 import {AppError, friendly} from '../core/errors.ts'
 import {randomId} from '../core/ids.ts'
-import type {ChunkFrame} from '../protocol/frame.ts'
+import {ChunkTreeHasher} from '../integrity/hash.ts'
+import {chunkSizeFor, type ChunkFrame} from '../protocol/frame.ts'
 import type {ControlMessage, TransferOffer} from '../protocol/messages.ts'
 import type {StoragePreferences} from '../storage/index.ts'
 import {uniqueFilename} from '../utils/filename.ts'
+import {keepIfSame} from '../utils/stable.ts'
 import type {PeerLink} from './PeerLink.ts'
 import {ReceiveTransfer} from './ReceiveTransfer.ts'
 import {SendTransfer} from './SendTransfer.ts'
-import {isActive, isTerminal, type SharedFileView, type TransferView} from './states.ts'
+import {isMoving, type SharedFileView, type TransferView} from './states.ts'
 
-const STALL_TICK_MS = 5000
+/**
+ * How often transfers are checked on: retries for unanswered messages, stall
+ * detection, and the download queue. Well inside TIMEOUTS.retryMs so a retry
+ * goes out close to when it falls due.
+ */
+const TICK_MS = 2500
+
+/** Offers go out in small groups, spaced to keep within OFFERS_PER_SECOND. */
+const OFFER_GROUP = 20
 
 export interface TransferManagerEvents extends Record<string, unknown> {
   update: void
@@ -42,6 +57,12 @@ export class TransferManager {
 
   #shared: SharedFile[] = []
   #sends = new Map<string, SendTransfer>()
+  /** The same sends, per shared file, in the order devices were offered it. */
+  #sendsByShared = new Map<string, SendTransfer[]>()
+  /** One set of chunk digests per shared file and chunk size. */
+  #hashers = new Map<string, ChunkTreeHasher>()
+  /** Last view handed out per shared file, so an unchanged one keeps its identity. */
+  #sharedViews = new Map<string, SharedFileView>()
   /** Keyed `peerId|transferId` — ids are only unique within one peer. */
   #receives = new Map<string, ReceiveTransfer>()
   /** Keyed `peerId|seq` for routing binary frames. */
@@ -50,16 +71,18 @@ export class TransferManager {
   #offered = new Map<string, Set<string>>()
   #peers = new Map<string, string>()
   #usedNames = new Set<string>()
-  /** Downloads the user has approved that are waiting their turn. */
-  #queuedAccepts = new Set<string>()
+  /** Downloads the user has approved that are waiting for a slot. */
+  #queuedAccepts = new Set<ReceiveTransfer>()
   /**
-   * Who holds the download slot per device, claimed synchronously.
+   * Downloads whose accept() is still running.
    *
    * accept() is async — it opens storage before reaching TRANSFERRING — so a
-   * loop that accepts five files in one tick would find the slot idle five
-   * times and start all five. The claim closes that gap.
+   * loop that accepts five files in one tick would find every slot idle five
+   * times. Claiming synchronously closes that gap.
    */
-  #claimed = new Map<string, string>()
+  #claimed = new Set<ReceiveTransfer>()
+  /** Peers with an offer loop running, and whether it should go round again. */
+  #offering = new Map<string, boolean>()
   #nextSeq = 1
   #watchdog: ReturnType<typeof setInterval> | null = null
   /** When the watchdog last ran, so a late tick can be recognised as a freeze. */
@@ -68,7 +91,7 @@ export class TransferManager {
   constructor(linkFor: (peerId: string) => PeerLink, prefs: StoragePreferences) {
     this.#linkFor = linkFor
     this.#prefs = prefs
-    this.#watchdog = setInterval(() => this.#tick(), STALL_TICK_MS)
+    this.#watchdog = setInterval(() => this.#tick(), TICK_MS)
   }
 
   on = <K extends keyof TransferManagerEvents>(
@@ -121,13 +144,20 @@ export class TransferManager {
   /** Stops sharing a file and cancels any transfer of it still in flight. */
   unshare(sharedId: string): void {
     this.#shared = this.#shared.filter(entry => entry.id !== sharedId)
-    for (const transfer of this.#sends.values()) {
-      if (transfer.sharedId === sharedId) transfer.cancel()
+    for (const transfer of this.#sendsByShared.get(sharedId) ?? []) {
+      transfer.cancel()
+      this.#sends.delete(transfer.id)
+    }
+    this.#sendsByShared.delete(sharedId)
+    this.#sharedViews.delete(sharedId)
+    for (const key of [...this.#hashers.keys()]) {
+      if (key.startsWith(`${sharedId}|`)) this.#hashers.delete(key)
     }
     for (const offered of this.#offered.values()) offered.delete(sharedId)
     this.#changed()
   }
 
+  /** Creates a transfer to this peer for every shared file it has not been offered. */
   #offerShared(peerId: string): void {
     let offered = this.#offered.get(peerId)
     if (!offered) {
@@ -135,54 +165,89 @@ export class TransferManager {
       this.#offered.set(peerId, offered)
     }
 
+    const link = this.#linkFor(peerId)
+    const chunkSize = chunkSizeFor(link.maxFrameBytes?.())
     for (const entry of this.#shared) {
       if (offered.has(entry.id)) continue
       offered.add(entry.id)
-      const transfer = new SendTransfer({
-        id: randomId(8),
-        seq: this.#nextSeq++ & 0xffff,
-        peerId,
-        peerName: this.#peers.get(peerId) ?? 'Device',
-        file: entry.file,
-        ...(entry.relPath ? {relPath: entry.relPath} : {}),
-        batchId: entry.batchId,
-        link: this.#linkFor(peerId),
-        onChange: () => this.#changed()
-      })
-      transfer.sharedId = entry.id
-      this.#sends.set(transfer.id, transfer)
+      this.#addSend(
+        new SendTransfer({
+          id: randomId(8),
+          seq: this.#nextSeq++ & 0xffff,
+          peerId,
+          peerName: this.#peers.get(peerId) ?? 'Device',
+          file: entry.file,
+          ...(entry.relPath ? {relPath: entry.relPath} : {}),
+          batchId: entry.batchId,
+          link,
+          chunkSize,
+          hasher: this.#hasherFor(entry, chunkSize),
+          onChange: () => this.#changed()
+        }),
+        entry.id
+      )
     }
 
-    this.#pumpQueue(peerId)
+    this.#startOffers(peerId)
   }
 
-  /** One active transfer per device, so each gets the full pipe in turn. */
+  #hasherFor(entry: SharedFile, chunkSize: number): ChunkTreeHasher {
+    const key = `${entry.id}|${chunkSize}`
+    let hasher = this.#hashers.get(key)
+    if (!hasher) {
+      hasher = new ChunkTreeHasher(entry.file.size, chunkSize, Math.ceil(entry.file.size / chunkSize))
+      this.#hashers.set(key, hasher)
+    }
+    return hasher
+  }
+
+  #addSend(transfer: SendTransfer, sharedId: string, replacing?: SendTransfer): void {
+    transfer.sharedId = sharedId
+    this.#sends.set(transfer.id, transfer)
+    const list = this.#sendsByShared.get(sharedId) ?? []
+    const at = replacing ? list.indexOf(replacing) : -1
+    if (at === -1) list.push(transfer)
+    else list[at] = transfer
+    this.#sendsByShared.set(sharedId, list)
+  }
+
   /**
-   * Offers every shared file to a device, rather than one at a time.
+   * Offers every queued file to a device, paced.
    *
-   * An offer is metadata, not bytes. Holding the rest back until the first
-   * transfer finished meant a device could see only the first of the files
-   * shared with it, with nothing on screen to say the others existed — and if
-   * that first file was never accepted, the rest never appeared at all.
+   * Every shared file is offered, not one at a time: an offer is metadata, and
+   * holding the rest back meant a device could see only the first of the files
+   * shared with it. But not all at once either — the receiving end rate limits
+   * its control channel, and a send resolves once the message is buffered, not
+   * delivered, so awaiting each one never paced anything. A drop of hundreds of
+   * files used to lose the tail of its offers without a word.
    *
-   * Bytes are still driven by what the receiver accepts; the sender no longer
-   * decides for it which file it is allowed to know about.
+   * One loop per device; a call while it runs asks it to go round again.
    */
-  #pumpQueue(peerId: string): void {
-    const queue = [...this.#sends.values()].filter(transfer => transfer.peerId === peerId)
-    void this.#offerQueued(queue)
+  #startOffers(peerId: string): void {
+    if (this.#offering.has(peerId)) {
+      this.#offering.set(peerId, true)
+      return
+    }
+    this.#offering.set(peerId, false)
+    void this.#offerLoop(peerId)
   }
 
-  async #offerQueued(queue: SendTransfer[]): Promise<void> {
-    for (const transfer of queue) {
-      // start() ignores anything already past QUEUED, so overlapping calls from
-      // the several places that pump the queue cannot double-send an offer.
-      if (transfer.state !== 'QUEUED') continue
-      // Awaited one at a time rather than fired together: a large drop would
-      // otherwise put hundreds of offers on the wire at once and trip the
-      // receiver's control-message rate limit, and a dropped offer is a file
-      // the other device never hears about.
-      await transfer.start()
+  async #offerLoop(peerId: string): Promise<void> {
+    try {
+      do {
+        this.#offering.set(peerId, false)
+        let sent = 0
+        for (const transfer of [...this.#sends.values()]) {
+          if (transfer.peerId !== peerId || transfer.state !== 'QUEUED') continue
+          if (!this.#peers.has(peerId)) return
+          await transfer.start()
+          if (++sent % OFFER_GROUP === 0) {
+            await new Promise(resolve => setTimeout(resolve, (OFFER_GROUP * 1000) / OFFERS_PER_SECOND))
+          }
+        }
+      } while (this.#offering.get(peerId) === true)
+    } finally {
+      this.#offering.delete(peerId)
     }
   }
 
@@ -201,23 +266,13 @@ export class TransferManager {
   }
 
   peerLost(peerId: string): void {
-    for (const transfer of this.#sends.values()) {
-      if (transfer.peerId === peerId) transfer.onPeerLost()
-    }
-    for (const transfer of this.#receives.values()) {
-      if (transfer.peerId === peerId) transfer.onPeerLost()
-    }
+    for (const transfer of this.#transfersOf(peerId)) transfer.onPeerLost()
     this.#changed()
   }
 
   peerRestored(peerId: string): void {
-    for (const transfer of this.#sends.values()) {
-      if (transfer.peerId === peerId) transfer.onPeerRestored()
-    }
-    for (const transfer of this.#receives.values()) {
-      if (transfer.peerId === peerId) transfer.onPeerRestored()
-    }
-    this.#pumpQueue(peerId)
+    for (const transfer of this.#transfersOf(peerId)) transfer.onPeerRestored()
+    if (this.#peers.has(peerId)) this.#startOffers(peerId)
     this.#changed()
   }
 
@@ -228,9 +283,11 @@ export class TransferManager {
     }
     for (const [key, transfer] of this.#receives) {
       if (transfer.peerId !== peerId) continue
-      transfer.cancel(false)
+      transfer.dispose()
       this.#receives.delete(key)
       this.#receiveBySeq.delete(seqKey(peerId, transfer.seq))
+      this.#queuedAccepts.delete(transfer)
+      this.#claimed.delete(transfer)
     }
     this.#peers.delete(peerId)
     this.#offered.delete(peerId)
@@ -249,7 +306,6 @@ export class TransferManager {
     const send = this.#sends.get(msg.transferId)
     if (send && send.peerId === peerId) {
       send.handleMessage(msg)
-      this.#pumpQueue(peerId)
       this.#changed()
       return
     }
@@ -268,16 +324,26 @@ export class TransferManager {
 
   #onOffer(peerId: string, offer: TransferOffer): void {
     const id = key(peerId, offer.transferId)
-    if (this.#receives.has(id)) return // Duplicate offer.
+    const existing = this.#receives.get(id)
+    if (existing) {
+      // Offered again: the sender never heard our answer.
+      existing.onOfferRepeated()
+      return
+    }
 
-    const transfer = new ReceiveTransfer({
+    let lastState: string | null = null
+    const transfer: ReceiveTransfer = new ReceiveTransfer({
       offer,
       peerId,
       peerName: this.#peers.get(peerId) ?? 'Device',
       link: this.#linkFor(peerId),
       onChange: () => {
-        // The running download finishing is what releases the next one.
-        this.#pumpDownloads(peerId)
+        // A download changing state — finishing, failing, being cancelled — is
+        // what frees a slot. Progress alone cannot, and is far more frequent.
+        if (transfer.state !== lastState) {
+          lastState = transfer.state
+          this.#pumpDownloads(peerId)
+        }
         this.#changed()
       },
       storagePrefs: this.#prefs,
@@ -287,6 +353,7 @@ export class TransferManager {
         return unique
       }
     })
+    lastState = transfer.state
 
     this.#receives.set(id, transfer)
     this.#receiveBySeq.set(seqKey(peerId, transfer.seq), transfer)
@@ -297,40 +364,36 @@ export class TransferManager {
   // ------------------------------------------------------------- user actions
 
   /**
-   * Starts a download, or puts it in line behind the one already running.
+   * Starts a download, or puts it in line for a slot.
    *
-   * One at a time per device, because five downloads sharing one connection all
-   * crawl and none of them finishes: serially, the first file is usable while
-   * the rest are still arriving, and an interruption costs one part-file rather
-   * than five.
+   * A large file gets the connection to itself: several large downloads
+   * sharing one link all crawl and none finishes, whereas one at a time the
+   * first is usable while the rest arrive, and an interruption costs one
+   * part-file rather than five. Small files are different — for them the round
+   * trips around the bytes dominate — so a few run side by side.
    */
   accept(id: string): void {
     const transfer = this.#findReceive(id)
     if (!transfer || transfer.state !== 'WAITING_FOR_ACCEPT') return
+    if (this.#claimed.has(transfer) || this.#queuedAccepts.has(transfer)) return
 
-    if (this.#downloading(transfer.peerId)) {
-      this.#queuedAccepts.add(transfer.id)
-      this.#pumpDownloads(transfer.peerId)
+    // Started straight from the click when a slot is free and nothing from the
+    // same device is ahead of it, so a save picker is still allowed to open.
+    const waiting = [...this.#queuedAccepts].some(queued => queued.peerId === transfer.peerId)
+    if (!waiting && this.#hasSlot(transfer)) {
+      this.#beginDownload(transfer)
       return
     }
-    this.#beginDownload(transfer)
+    this.#queuedAccepts.add(transfer)
+    this.#pumpDownloads(transfer.peerId)
   }
 
-  /**
-   * Starts a download in the claimed slot, and hands the slot back if it never
-   * actually began.
-   *
-   * Dismissing the save dialog leaves the transfer in WAITING_FOR_ACCEPT, which
-   * is not terminal — so #downloading would go on seeing the claim as live and
-   * every queued file would wait behind a download that never started.
-   */
   #beginDownload(transfer: ReceiveTransfer): void {
-    this.#claimed.set(transfer.peerId, transfer.id)
+    this.#claimed.add(transfer)
+    // Once accept() settles the transfer holds its slot by state instead —
+    // or, if the save dialog was dismissed, hands it back.
     void transfer.accept().finally(() => {
-      if (transfer.state !== 'WAITING_FOR_ACCEPT') return
-      if (this.#claimed.get(transfer.peerId) === transfer.id) {
-        this.#claimed.delete(transfer.peerId)
-      }
+      this.#claimed.delete(transfer)
       this.#pumpDownloads(transfer.peerId)
     })
   }
@@ -341,63 +404,61 @@ export class TransferManager {
    * Deliberately not a cancel: cancelling is terminal, so a queued file that
    * was cancelled could never be downloaded afterwards. Since a queued transfer
    * never left WAITING_FOR_ACCEPT — only the accept was held back — dropping it
-   * from the queue puts the Download button back exactly as it was. Accept five,
-   * change your mind, then take just the two you wanted.
+   * from the queue puts the Download button back exactly as it was.
    */
   unqueue(id: string): void {
     const transfer = this.#findReceive(id)
-    if (!transfer || !this.#queuedAccepts.has(transfer.id)) return
-    this.#queuedAccepts.delete(transfer.id)
+    if (!transfer || !this.#queuedAccepts.delete(transfer)) return
     transfer.queuePosition = null
     this.#pumpDownloads(transfer.peerId)
     this.#changed()
   }
 
-  /** True while a download from this device is occupying the slot. */
-  #downloading(peerId: string): boolean {
-    const claimed = this.#claimed.get(peerId)
-    if (claimed !== undefined) {
-      const holder = this.#findReceive(claimed)
-      if (holder && !isTerminal(holder.state)) return true
-      this.#claimed.delete(peerId)
-    }
-
+  /** Whether a download from this transfer's device could start now. */
+  #hasSlot(candidate: ReceiveTransfer): boolean {
+    let running = 0
+    let allSmall = candidate.size <= SMALL_FILE_BYTES
     for (const transfer of this.#receives.values()) {
-      if (transfer.peerId !== peerId) continue
-      if (isActive(transfer.state) || transfer.state === 'VERIFYING') return true
+      if (transfer === candidate || transfer.peerId !== candidate.peerId) continue
+      if (!this.#claimed.has(transfer) && !isMoving(transfer.state)) continue
+      running++
+      if (transfer.size > SMALL_FILE_BYTES) allSmall = false
     }
-    return false
+    return running === 0 || (allSmall && running < MAX_PARALLEL_SMALL_DOWNLOADS)
   }
 
   /**
-   * Numbers the waiting downloads and lets the next one go when the slot frees.
-   * Called on every receive-side change, so finishing, failing or cancelling the
-   * running transfer all release the queue.
+   * Numbers the waiting downloads and starts whichever now fit, in the order
+   * they were accepted. Called on every download state change, so finishing,
+   * failing or cancelling the running one all release the queue.
    */
   #pumpDownloads(peerId: string): void {
-    const waiting = [...this.#receives.values()].filter(
-      transfer => transfer.peerId === peerId && this.#queuedAccepts.has(transfer.id)
-    )
-
-    // Anything that left WAITING_FOR_ACCEPT — cancelled, or already started —
-    // is no longer queued.
-    for (const transfer of waiting) {
+    let changed = false
+    let position = 0
+    for (const transfer of [...this.#queuedAccepts]) {
+      if (transfer.peerId !== peerId) continue
       if (transfer.state !== 'WAITING_FOR_ACCEPT') {
-        this.#queuedAccepts.delete(transfer.id)
+        // Cancelled, or started some other way: no longer queued.
+        this.#queuedAccepts.delete(transfer)
+        changed ||= transfer.queuePosition !== null
         transfer.queuePosition = null
+        continue
+      }
+      // Strictly in order: a small file does not jump a large one ahead of it.
+      if (position === 0 && this.#hasSlot(transfer)) {
+        this.#queuedAccepts.delete(transfer)
+        transfer.queuePosition = null
+        changed = true
+        this.#beginDownload(transfer)
+        continue
+      }
+      position++
+      if (transfer.queuePosition !== position) {
+        transfer.queuePosition = position
+        changed = true
       }
     }
-
-    const queue = waiting.filter(transfer => this.#queuedAccepts.has(transfer.id))
-    let position = 0
-    for (const transfer of queue) transfer.queuePosition = ++position
-
-    if (this.#downloading(peerId)) return
-    const next = queue[0]
-    if (!next) return
-    this.#queuedAccepts.delete(next.id)
-    next.queuePosition = null
-    this.#beginDownload(next)
+    if (changed) this.#changed()
   }
 
   reject(id: string): void {
@@ -415,11 +476,7 @@ export class TransferManager {
   }
 
   cancel(id: string): void {
-    const send = this.#sends.get(id)
-    if (send) {
-      send.cancel()
-      this.#pumpQueue(send.peerId)
-    }
+    this.#sends.get(id)?.cancel()
     this.#findReceive(id)?.cancel()
     this.#changed()
   }
@@ -434,7 +491,7 @@ export class TransferManager {
     this.#findReceive(id)?.saveAgain()
   }
 
-  /** Retries in place, keeping the transfer bound to the same device. */
+  /** Retries in place: same device, same batch, same place in the list. */
   retry(id: string): void {
     const previous = this.#sends.get(id)
     if (!previous) return
@@ -446,14 +503,16 @@ export class TransferManager {
       peerName: previous.peerName,
       file: previous.file,
       ...(previous.relPath ? {relPath: previous.relPath} : {}),
+      ...(previous.batchId ? {batchId: previous.batchId} : {}),
       link: this.#linkFor(previous.peerId),
+      chunkSize: previous.chunkSize,
+      hasher: previous.hasher,
       onChange: () => this.#changed()
     })
-    replacement.sharedId = previous.sharedId
 
     this.#sends.delete(id)
-    this.#sends.set(replacement.id, replacement)
-    this.#pumpQueue(previous.peerId)
+    this.#addSend(replacement, previous.sharedId, previous)
+    this.#startOffers(previous.peerId)
     this.#changed()
   }
 
@@ -461,16 +520,18 @@ export class TransferManager {
 
   /** Dropped files, each with one row per device it was offered to. */
   sharedFiles(): SharedFileView[] {
-    return this.#shared.map(entry => ({
-      id: entry.id,
-      name: entry.file.name,
-      size: entry.file.size,
-      addedAt: entry.addedAt,
-      batchId: entry.batchId,
-      transfers: [...this.#sends.values()]
-        .filter(transfer => transfer.sharedId === entry.id)
-        .map(transfer => transfer.view())
-    }))
+    return this.#shared.map(entry => {
+      const view = keepIfSame<SharedFileView>(this.#sharedViews.get(entry.id), {
+        id: entry.id,
+        name: entry.file.name,
+        size: entry.file.size,
+        addedAt: entry.addedAt,
+        batchId: entry.batchId,
+        transfers: (this.#sendsByShared.get(entry.id) ?? []).map(transfer => transfer.view())
+      })
+      this.#sharedViews.set(entry.id, view)
+      return view
+    })
   }
 
   /**
@@ -485,24 +546,38 @@ export class TransferManager {
     return [...this.#receives.values()].map(transfer => transfer.view())
   }
 
+  /** Bytes are moving, or about to, in either direction. What the wake lock follows. */
+  hasMovingTransfers(): boolean {
+    for (const transfer of this.#sends.values()) if (isMoving(transfer.state)) return true
+    for (const transfer of this.#receives.values()) if (isMoving(transfer.state)) return true
+    return false
+  }
+
   /**
-   * Read straight off `state` rather than through `view()`. This is called on
-   * every render of the app — it drives the unload guard and the wake lock —
-   * and `view()` builds a fresh object per transfer, so the old form allocated
-   * one object per transfer several times a second to look at one field.
+   * Closing the page now would lose something: a transfer is moving, or a file
+   * shared from here is still waiting for a device to take it. An offer
+   * *to* this device that nobody has accepted is not a reason to stay open.
    */
-  hasActiveTransfers(): boolean {
-    for (const transfer of this.#sends.values()) if (!isTerminal(transfer.state)) return true
-    for (const transfer of this.#receives.values()) if (!isTerminal(transfer.state)) return true
+  hasUnfinishedWork(): boolean {
+    if (this.hasMovingTransfers()) return true
+    for (const transfer of this.#sends.values()) {
+      if (transfer.state === 'QUEUED' || transfer.state === 'WAITING_FOR_ACCEPT') return true
+    }
     return false
   }
 
   /** Cancels everything in flight and clears history, for a fresh session. */
   reset(): void {
     this.stopAll()
+    for (const transfer of this.#receives.values()) transfer.dispose()
     this.#sends.clear()
+    this.#sendsByShared.clear()
+    this.#hashers.clear()
+    this.#sharedViews.clear()
     this.#receives.clear()
     this.#receiveBySeq.clear()
+    this.#queuedAccepts.clear()
+    this.#claimed.clear()
     this.#shared = []
     this.#offered.clear()
     this.#peers.clear()
@@ -527,6 +602,11 @@ export class TransferManager {
 
   // ---------------------------------------------------------------- internals
 
+  *#transfersOf(peerId: string): Iterable<SendTransfer | ReceiveTransfer> {
+    for (const transfer of this.#sends.values()) if (transfer.peerId === peerId) yield transfer
+    for (const transfer of this.#receives.values()) if (transfer.peerId === peerId) yield transfer
+  }
+
   #findReceive(transferId: string): ReceiveTransfer | undefined {
     for (const transfer of this.#receives.values()) {
       if (transfer.id === transferId) return transfer
@@ -543,24 +623,29 @@ export class TransferManager {
     // time is credited back before anything is judged on it. Detected from the
     // clock rather than from a visibility event, so laptop sleep and a frozen
     // background tab are both covered without touching the DOM.
-    const overdue = now - this.#lastTick - STALL_TICK_MS
+    const overdue = now - this.#lastTick - TICK_MS
     this.#lastTick = now
-    if (overdue > STALL_TICK_MS) {
+    if (overdue > TICK_MS) {
       for (const transfer of this.#sends.values()) transfer.creditFrozen(overdue)
       for (const transfer of this.#receives.values()) transfer.creditFrozen(overdue)
     }
 
-    for (const transfer of this.#sends.values()) transfer.checkStall(now)
-    for (const transfer of this.#receives.values()) transfer.checkStall(now)
+    for (const transfer of this.#sends.values()) transfer.tick(now)
+    for (const transfer of this.#receives.values()) transfer.tick(now)
     for (const peerId of this.#peers.keys()) {
-      this.#pumpQueue(peerId)
-      // Belt and braces for the download queue. It is normally released by the
-      // running transfer's own onChange, and a single missed callback used to
-      // strand every queued file behind it until the user backed one out and
-      // asked again. A queue that re-checks itself cannot get permanently stuck.
+      // Belt and braces: both queues normally move on events, and a single
+      // missed one used to strand everything behind it. A queue that re-checks
+      // itself cannot get permanently stuck.
+      if (this.#hasQueuedOffers(peerId)) this.#startOffers(peerId)
       this.#pumpDownloads(peerId)
     }
-    this.#changed()
+  }
+
+  #hasQueuedOffers(peerId: string): boolean {
+    for (const transfer of this.#sends.values()) {
+      if (transfer.peerId === peerId && transfer.state === 'QUEUED') return true
+    }
+    return false
   }
 
   #changed(): void {

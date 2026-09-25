@@ -86,10 +86,22 @@ export class MemoryTransport implements Transport {
     roundTripMs: 4
   }
 
-  constructor(network: MemoryNetwork, options: {localOnly?: boolean} = {}) {
+  /** What maxFrameBytes reports. Unlimited unless a test wants chunk sizing exercised. */
+  maxFrame: number
+
+  /**
+   * `selfId` may be fixed, because a real transport's is: Trystero mints one per
+   * page load, so a device that rebuilds its connection comes back under the
+   * same id — and the other end has to recognise it as the same device.
+   */
+  constructor(
+    network: MemoryNetwork,
+    options: {localOnly?: boolean; selfId?: string; maxFrame?: number} = {}
+  ) {
     this.#network = network
     this.localOnly = options.localOnly ?? false
-    this.selfId = `mem-${++counter}`
+    this.selfId = options.selfId ?? `mem-${++counter}`
+    this.maxFrame = options.maxFrame ?? Number.POSITIVE_INFINITY
   }
 
   on<K extends keyof TransportEvents>(
@@ -128,6 +140,10 @@ export class MemoryTransport implements Transport {
     this.#emitter.clear()
   }
 
+  /**
+   * Delivery is FIFO across control and chunks alike, so `afterChunks` holds by
+   * construction here.
+   */
   async sendControl(peerId: PeerId, message: unknown): Promise<void> {
     // Serialized rather than passed by reference, exactly as the wire does, so
     // a message carrying something unserializable fails here too.
@@ -140,6 +156,17 @@ export class MemoryTransport implements Transport {
   async sendChunk(peerId: PeerId, frame: Uint8Array): Promise<void> {
     const copy = new Uint8Array(frame)
     this.#send(peerId, peer => peer.#emitter.emit('chunk', {peerId: this.selfId, data: copy}))
+  }
+
+  maxFrameBytes(): number {
+    return this.maxFrame
+  }
+
+  /** How many times the session asked to look harder. There is only one network here. */
+  widenedSearches = 0
+
+  widenSearch(): void {
+    this.widenedSearches++
   }
 
   pathFor(peerId: PeerId): NetworkPath {

@@ -182,3 +182,36 @@ export function toAppError(error: unknown, fallback: ErrorCode = 'unknown'): App
   const detail = error instanceof Error ? error.message : String(error)
   return new AppError(fallback, detail, {cause: error})
 }
+
+/**
+ * Why reading the file being sent failed.
+ *
+ * Browsers answer a File whose bytes on disk were deleted, moved or rewritten
+ * since it was picked with a NotReadableError or NotFoundError. That is a fact
+ * about the file, not the connection — no reconnect will fix it — and treating
+ * it as "connection lost" parked the transfer for minutes before failing it
+ * with a message that sent people to check their Wi-Fi.
+ */
+export function readFailure(error: unknown): AppError {
+  if (error instanceof AppError) return error
+  const detail = error instanceof Error ? error.message : String(error)
+  return new AppError('file-unreadable', detail, {cause: error})
+}
+
+/** Failure codes a peer may report in TRANSFER_ERROR. Anything else is a violation. */
+const PEER_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  'storage-full',
+  'storage-unavailable',
+  'integrity-failed',
+  'resume-mismatch',
+  'too-large',
+  'finalize-failed',
+  'file-unreadable',
+  'file-changed',
+  'protocol-violation'
+])
+
+/** Maps the untrusted code in a peer's TRANSFER_ERROR onto one of ours. */
+export function codeFromPeer(code: string): ErrorCode {
+  return PEER_CODES.has(code as ErrorCode) ? (code as ErrorCode) : 'protocol-violation'
+}
