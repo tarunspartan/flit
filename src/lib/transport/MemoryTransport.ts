@@ -162,13 +162,6 @@ export class MemoryTransport implements Transport {
     return this.maxFrame
   }
 
-  /** How many times the session asked to look harder. There is only one network here. */
-  widenedSearches = 0
-
-  widenSearch(): void {
-    this.widenedSearches++
-  }
-
   pathFor(peerId: PeerId): NetworkPath {
     return this.#peer(peerId) ? this.#path : UNKNOWN_PATH
   }

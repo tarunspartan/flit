@@ -9,7 +9,7 @@ TURN credentials, and the signaling infrastructure.
 
 | Party | What it can see |
 |---|---|
-| Signaling relay or broker | A SHA-256-derived topic and encrypted signaling payloads. Not the pairing code, not file data, not file metadata. Nostr relays and MQTT brokers see exactly the same thing. |
+| Signaling relay | A SHA-256-derived topic and encrypted signaling payloads. Not the pairing code, not file data, not file metadata. |
 | STUN server | A connectivity probe. It sees an IP and port, never file data — there is no TURN relay in this project, so no server ever carries your bytes. |
 | The paired device | Everything you send it. This is the party the approval step exists to control. |
 | The app's own backend | There isn't one. The build is a static site. |
@@ -19,8 +19,8 @@ TURN credentials, and the signaling infrastructure.
 A 12-symbol Crockford base32 code carries **60 bits of entropy**. It is used two ways and
 transmitted neither time:
 
-1. The signaling topic is `SHA-256(appId : "room" : code)`, truncated. A relay or broker operator
-   sees an opaque topic.
+1. The signaling topic is `SHA-256(appId : "room" : code)`, truncated. A relay operator sees an
+   opaque topic.
 2. The code itself is the Trystero room password, which encrypts signaling payloads. Without the
    code you cannot complete a handshake even if you find the topic.
 
@@ -87,11 +87,9 @@ Be honest about these when deploying:
 2. **The code is a bearer token.** Anyone who obtains it during the room's lifetime can join and
    download what is shared. Per-file consent limits what can be pushed *to* you; it does not limit
    what a joiner can pull from what you have already shared.
-3. **Public signaling relays.** The default configuration uses public Nostr relays, and public MQTT
-   brokers as a backup. They see traffic patterns and topic hashes — timing and volume metadata, not
-   content. Every device keeps a connection to the brokers open while a room is open, so a broker
-   operator can see that a device is present on a topic even when nostr did the introducing. Run
-   your own relay and broker if that matters to you.
+3. **Public signaling relays.** The default configuration uses public Nostr relays. They see
+   traffic patterns and topic hashes — timing and volume metadata, not content. Run your own relay
+   if that matters to you.
 4. **Rate limiting is client-side.** The join throttle protects a user's own session; it is not a
    server-enforced control. There is no server in this project to enforce one.
 5. **No relay means some networks simply fail.** Symmetric NAT and strict firewalls cannot be

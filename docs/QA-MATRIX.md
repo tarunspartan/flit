@@ -19,7 +19,7 @@ npm run typecheck && npm test && npm run build
 
 | Check | Status |
 |---|---|
-| 147 unit, session, transport and end-to-end protocol tests pass | ☐ |
+| 138 unit, session, transport and end-to-end protocol tests pass | ☐ |
 | Production build succeeds | ☐ |
 | No type errors | ☐ |
 
@@ -194,8 +194,6 @@ npm run typecheck && npm test && npm run build
 | Mixed versions in one room | An older build and this one send to each other in both directions | ☐ |
 | Two tabs, one received file each | Reloading or opening a tab never deletes the other tab's file | ☐ |
 | One signaling relay refuses | Pairing still works; no lasting "Couldn't connect" banner | ☐ |
-| Every nostr relay unreachable | A guest still finds the host within ~10 s, over the MQTT brokers | ☐ |
-| Both signaling networks working | Each device appears once in the roster, not twice | ☐ |
 | Network switch with no peers | Silent for 10s, then "Reconnecting…", only then "Can't reach the internet" | ☐ |
 
 ## Browser results

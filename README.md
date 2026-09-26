@@ -30,7 +30,7 @@ on a device on the same Wi-Fi — `npm run dev` binds to `0.0.0.0` precisely so 
 
 ```bash
 npm run build        # typecheck + production bundle in dist/
-npm test             # 147 unit, session, transport and end-to-end protocol tests
+npm test             # 138 unit, session, transport and end-to-end protocol tests
 npm run typecheck
 ```
 
@@ -121,7 +121,7 @@ The UI never sees SDP, ICE candidates, DataChannels, or Trystero. Everything bel
 src/lib/
 ├── core/        events · ids · errors · config (every tunable limit)
 ├── protocol/    wire messages · strict validation · binary framing
-├── transport/   Transport interface · Trystero adapter (nostr + MQTT) · bulk data channel · ICE path classifier
+├── transport/   Transport interface · Trystero adapter · bulk data channel · ICE path classifier
 ├── integrity/   chunk-tree hashing
 ├── storage/     three receiver tiers + capacity checks
 ├── transfer/    send/receive halves · per-device queues · flow control · states
@@ -266,7 +266,7 @@ would rather tell you the truth and stay free.
 The no-internet row is about *introductions*, not bytes. Two devices on one offline hotspot can
 reach each other directly — and once connected, files never leave the network — but a browser cannot
 listen for another device, so something has to carry the first offer and answer between them, and
-here that is a signaling relay or broker. Without internet access nothing can. The only serverless way
+here that is a signaling relay. Without internet access nothing can. The only serverless way
 around it in a browser is to carry that exchange by hand, as QR codes each device scans from the
 other; that is not built.
 
@@ -282,23 +282,7 @@ the in-flight window. Change them there rather than hunting through the code.
 
 ### Signaling relays
 
-Devices are introduced over two independent networks, because the public servers that do it are
-run by other people and disappear without notice.
-
-- **Nostr relays** (`RELAY_URLS`) — the primary. Every device announces and listens here from the
-  start.
-- **MQTT brokers** (`MQTT_BROKER_URLS`) — the backup: public brokers run by EMQX, HiveMQ and the
-  Eclipse Foundation, so they fail for reasons unrelated to volunteer nostr relays. Every device
-  *listens* here, which costs three sockets and no connections. A device only starts *announcing*
-  here when nostr has not delivered someone it expects — a guest that has met nobody six seconds
-  after joining, or a device that dropped and has not come back. A listener wakes when it hears an
-  announcement, so the two meet over MQTT with no extra step for anyone. The MQTT client is loaded
-  after the page is up and never delays it.
-
-A device reachable over both networks has two connections and is still one device: one carries the
-traffic and the other waits on standby, taking over if the first dies.
-
-`RELAY_URLS` in the same file pins the nostr relays. This is worth
+`RELAY_URLS` in the same file pins the nostr relays used to introduce two devices. This is worth
 knowing about, because the default behaviour is a trap: Trystero picks five relays from its list of
 47 by shuffling them with a seed derived from the app id — so the choice is fixed for the whole
 app, not per room. Four of the five it picked for this app id were dead (503, 530, 502, and a
@@ -308,11 +292,12 @@ busy.
 Each pinned relay is checked with the round trip signaling depends on, not just a handshake: one
 socket subscribes to a topic, a second publishes a signed ephemeral event to it — the kind Trystero
 sends — and the first has to receive it. Plenty of relays answer a handshake and then refuse exactly
-that (ephemeral kinds blocked, proof of work demanded). The brokers get the same test with MQTT.
+that (ephemeral kinds blocked, proof of work demanded).
 
-That check runs every day: [`.github/workflows/signaling-health.yml`](.github/workflows/signaling-health.yml)
-round-trips every pinned relay and broker and fails — which notifies you — when one is down for
-most of a minute, naming it. Run it by hand any time:
+That check runs once a week on GitHub: [`.github/workflows/signaling-health.yml`](.github/workflows/signaling-health.yml)
+round-trips every pinned relay and fails — which notifies you — when one is down for most of a
+minute, naming it. It only reports; replacing a dead relay is an edit to `config.ts` and a deploy.
+Run it by hand any time:
 
 ```bash
 npm run check:signaling
@@ -490,11 +475,6 @@ a chunk that contradicts the offer, rejection, a resume with a mismatched file, 
 and, under **recovery**, every way a message or a connection can go missing: a blip before anyone
 accepts, a lost go-ahead, a lost completion, a lost decision, a single lost chunk, a file that
 vanishes mid-send, a completion delivered twice, and a save slower than the stall window.
-
-`tests/session.test.ts` also covers when a device looks harder for a missing peer — a guest that
-has met nobody, a device that dropped — and that a host simply waiting, or a room where everyone is
-present, never does. The connection bookkeeping behind "two connections, one device" is covered in
-`tests/units.test.ts`.
 
 `tests/manager.test.ts` drives `TransferManager` against recording links: chunks sized to the
 link's message limit, small downloads side by side, a large one alone, order kept between them, and

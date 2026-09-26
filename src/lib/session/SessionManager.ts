@@ -1,4 +1,4 @@
-import {LIMITS, MAX_PEERS, SEARCH_WIDEN_MS, TIMEOUTS} from '../core/config.ts'
+import {LIMITS, MAX_PEERS, TIMEOUTS} from '../core/config.ts'
 import {AppError, friendly, toAppError, type ErrorCode} from '../core/errors.ts'
 import {Emitter} from '../core/events.ts'
 import {randomId} from '../core/ids.ts'
@@ -138,8 +138,6 @@ interface PeerRecord {
   agreeTimer: ReturnType<typeof setTimeout> | null
   limiter: MessageRateLimiter
   dropTimer: ReturnType<typeof setTimeout> | null
-  /** When the connection to this device went, while it has not come back. */
-  absentSince: number | null
 }
 
 interface SessionEvents extends Record<string, unknown> {
@@ -170,8 +168,6 @@ export class SessionManager {
   #everHadPeer = false
   #signaling: SignalingHealth = 'ok'
   #signalingBadSince: number | null = null
-  /** When the current transport joined its room, for SEARCH_WIDEN_MS. */
-  #joinedAt = 0
   #healthTimer: ReturnType<typeof setInterval> | null = null
   #busy = false
   #error: AppError | null = null
@@ -302,7 +298,6 @@ export class SessionManager {
       this.#transport = transport
       this.#wireTransport(transport)
       await transport.join(room.code)
-      this.#joinedAt = Date.now()
       this.#watchSignaling()
       return true
     } catch (err) {
@@ -334,7 +329,6 @@ export class SessionManager {
       this.#transport = transport
       this.#wireTransport(transport)
       await transport.join(room.code)
-      this.#joinedAt = Date.now()
 
       this.#status = 'open'
       saveRoom(this.#rooms.current)
@@ -392,7 +386,6 @@ export class SessionManager {
     if (existing) {
       // A device coming back after a connection blip keeps its approval.
       existing.present = true
-      existing.absentSince = null
       if (existing.dropTimer !== null) clearTimeout(existing.dropTimer)
       existing.dropTimer = null
       void this.#sendHello(peerId)
@@ -429,8 +422,7 @@ export class SessionManager {
       peerKind: null,
       agreeTimer: null,
       limiter: new MessageRateLimiter(),
-      dropTimer: null,
-      absentSince: null
+      dropTimer: null
     })
 
     void this.#sendHello(peerId)
@@ -444,7 +436,6 @@ export class SessionManager {
     if (!peer?.present) return
 
     peer.present = false
-    peer.absentSince = Date.now()
     // A reconnect can land on an entirely different path, so both reads of the
     // old one are discarded rather than carried over.
     peer.path = UNKNOWN_PATH
@@ -943,7 +934,6 @@ export class SessionManager {
 
     this.#healthTimer = setInterval(() => {
       const now = Date.now()
-      if (this.#missingSomeone(now)) this.#transport?.widenSearch()
       if (this.#transport?.signalingReady() === true) this.#signalingBadSince = null
       else this.#signalingBadSince ??= now
 
@@ -960,29 +950,6 @@ export class SessionManager {
         this.#changed()
       }
     }, 3000)
-  }
-
-  /**
-   * Whether a device this one expects has not turned up — which is when the
-   * transport should look harder than its default.
-   *
-   * Two cases. A guest came here to meet someone, so meeting nobody for a few
-   * seconds after joining means signaling is not delivering. And a device that
-   * dropped and has not come back may be unreachable the way it came. A host
-   * that has met no one yet is simply waiting — guests do the looking — so it
-   * does not count.
-   */
-  #missingSomeone(now: number): boolean {
-    if (this.#status !== 'open' || !this.#transport) return false
-    const devices = [...this.#peers.values()].filter(peer => peer.approved && !peer.isSelf)
-    const lost = devices.some(
-      peer => peer.absentSince !== null && now - peer.absentSince >= SEARCH_WIDEN_MS
-    )
-    const lonelyGuest =
-      this.#rooms.current?.role === 'guest' &&
-      !devices.some(peer => peer.present) &&
-      now - this.#joinedAt >= SEARCH_WIDEN_MS
-    return lost || lonelyGuest
   }
 
   #armExpiry(): void {

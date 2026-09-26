@@ -1,16 +1,9 @@
-import {
-  getRelaySockets as nostrSockets,
-  joinRoom as joinNostr,
-  selfId,
-  type JoinRoom,
-  type Room
-} from 'trystero/nostr'
-import {APP_ID, MQTT_BROKER_URLS, RELAY_URLS} from '../core/config.ts'
+import {getRelaySockets, joinRoom, selfId, type Room} from 'trystero/nostr'
+import {APP_ID, RELAY_URLS} from '../core/config.ts'
 import {Emitter} from '../core/events.ts'
 import {AppError} from '../core/errors.ts'
 import {deriveRoomTopic} from '../core/ids.ts'
 import {BulkChannel} from './BulkChannel.ts'
-import {LinkTable} from './LinkTable.ts'
 import {classifyPath, steadyPath} from './pathClassifier.ts'
 import {resolveIceServers} from './iceServers.ts'
 import {
@@ -44,20 +37,9 @@ const PATH_SETTLE_MS = 6000
 const FALLBACK_MAX_FRAME = 64 * 1024
 
 type Send<T> = (data: T, options: {target: string}) => Promise<void>
-type Sockets = () => Record<string, {readyState?: number} | undefined>
 
-/** One signaling network, and the room joined through it. */
-interface Network {
-  readonly name: 'nostr' | 'mqtt'
-  readonly room: Room
-  readonly sendControl: Send<unknown>
-  readonly sendChunk: Send<Uint8Array>
-  readonly sockets: Sockets
-}
-
-/** One connection to one device, introduced over one network. */
+/** The connection to one device. */
 interface Link {
-  readonly network: Network
   readonly pc: RTCPeerConnection
   readonly bulk: BulkChannel | null
 }
@@ -65,49 +47,30 @@ interface Link {
 /**
  * The only file in the app that imports Trystero.
  *
- * Trystero finds the other devices and keeps the connections up. It does that
- * over two signaling networks at once, because the nostr relays it relies on by
- * default are run by volunteers and fail without notice:
- *
- * - **nostr** (primary) — announces and listens from the start.
- * - **MQTT** (backup) — public brokers run by companies. Every device listens
- *   there passively, which costs a few sockets and no connections; a device
- *   starts announcing there only when `widenSearch()` says nostr has not
- *   delivered a device it expects. A passive listener wakes when it hears an
- *   announcement, so the two meet over MQTT without either having to guess.
- *
- * A device reachable over both is still one device: see LinkTable.
- *
- * File bytes ride a data channel of our own on each connection (BulkChannel);
+ * Trystero finds the other devices over nostr relays and keeps the connections
+ * up. File bytes ride a data channel of our own on each connection (BulkChannel);
  * Trystero's channel carries control messages, and file data only for a peer on
  * an older build that has no bulk channel.
  *
  * Pairing code handling matters here: the code is the Trystero `password`
- * (which encrypts signaling payloads) while the *topic* published to a relay or
- * broker is a hash of it. Its operator sees an opaque topic and ciphertext, and
+ * (which encrypts signaling payloads) while the *topic* published to a relay
+ * is a hash of it. A relay operator sees an opaque topic and ciphertext, and
  * can neither join the room nor recover the code.
  */
 export class TrysteroTransport implements Transport {
   readonly selfId = selfId
 
   #emitter = new Emitter<TransportEvents>()
-  #links = new LinkTable<Link>()
+  #links = new Map<PeerId, Link>()
   #paths = new Map<PeerId, NetworkPath>()
   /** When each peer's current connection appeared, for PATH_SETTLE_MS. */
   #pathSince = new Map<PeerId, number>()
   #pathTimer: ReturnType<typeof setInterval> | null = null
   #localOnly: boolean
 
-  #code: string | null = null
-  #topic: string | null = null
-  #nostr: Network | null = null
-  #backup: Network | null = null
-  /** Whether the backup network is (being) joined as an announcer. */
-  #backupAnnouncing = false
-  /** Serializes joining and rejoining the backup network. */
-  #backupTask: Promise<void> = Promise.resolve()
-  /** Bumped by leave(), so a backup join still in flight knows it is stale. */
-  #generation = 0
+  #room: Room | null = null
+  #sendControl: Send<unknown> | null = null
+  #sendChunk: Send<Uint8Array> | null = null
 
   constructor(options: {localOnly?: boolean} = {}) {
     this.#localOnly = options.localOnly ?? false
@@ -121,46 +84,65 @@ export class TrysteroTransport implements Transport {
   }
 
   async join(code: string): Promise<void> {
-    if (this.#nostr) throw new AppError('unknown', 'transport already joined')
+    if (this.#room) throw new AppError('unknown', 'transport already joined')
     if (typeof RTCPeerConnection === 'undefined') {
       throw new AppError('unsupported-browser', 'RTCPeerConnection is unavailable')
     }
 
-    this.#code = code
-    this.#topic = await deriveRoomTopic(APP_ID, code)
-    // Left to itself Trystero would pick five relays from its defaults, and for
-    // this appId four of those five are dead. See RELAY_URLS.
-    this.#nostr = this.#joinNetwork('nostr', joinNostr, RELAY_URLS, nostrSockets, false)
-    // In the background: the MQTT client is loaded on demand so it never
-    // delays the first paint, and a failure to load costs only the backup.
-    this.#queueBackup(false)
+    const topic = await deriveRoomTopic(APP_ID, code)
+    const room = joinRoom(
+      {
+        appId: APP_ID,
+        password: code,
+        // Left to itself Trystero would pick five relays from its defaults, and
+        // for this appId four of those five are dead. See RELAY_URLS.
+        relayConfig: {urls: [...RELAY_URLS]},
+        rtcConfig: {
+          iceServers: resolveIceServers(this.#localOnly),
+          // Gather host candidates from every interface so a same-LAN pair is
+          // found quickly instead of after a STUN round trip.
+          iceCandidatePoolSize: 2
+        }
+      },
+      topic,
+      {
+        onJoinError: details => {
+          // A handshake that lost a race to one that succeeded is no failure.
+          if (details.peerId && this.#links.has(details.peerId)) return
+          this.#emitter.emit('error', {error: new AppError('connection-failed', details.error)})
+        }
+      }
+    )
+    this.#room = room
+
+    // Trystero types payloads as its own JSON union; the protocol layer does
+    // the real validation, so these are handled as opaque values here.
+    const control = room.makeAction(CONTROL_ACTION)
+    const chunk = room.makeAction<Uint8Array>(CHUNK_ACTION)
+    this.#sendControl = control.send as Send<unknown>
+    this.#sendChunk = chunk.send
+    control.onMessage = (data, context) => {
+      this.#emitter.emit('control', {peerId: context.peerId, raw: data})
+    }
+    chunk.onMessage = (data, context) => {
+      this.#emitter.emit('chunk', {peerId: context.peerId, data})
+    }
+    room.onPeerJoin = peerId => this.#linkUp(peerId)
+    room.onPeerLeave = peerId => this.#drop(peerId)
   }
 
   async leave(): Promise<void> {
-    this.#generation++
     this.#stopPolling()
-    for (const [, link] of this.#links.entries()) link.bulk?.close()
+    for (const link of this.#links.values()) link.bulk?.close()
     this.#links.clear()
     this.#paths.clear()
     this.#pathSince.clear()
     this.#emitter.clear()
-    const rooms = [this.#nostr?.room, this.#backup?.room]
-    this.#nostr = null
-    this.#backup = null
-    this.#backupAnnouncing = false
-    this.#code = null
-    this.#topic = null
-    await Promise.all(rooms.map(room => room?.leave().catch(() => {})))
-  }
-
-  widenSearch(): void {
-    if (!this.#nostr || this.#backupAnnouncing) return
-    // A listener that someone's announcement already woke is announcing too,
-    // for as long as it holds connections; rejoining would only cut them. The
-    // session asks again while a device is still missing.
-    for (const [, link] of this.#links.entries()) if (link.network === this.#backup) return
-    this.#backupAnnouncing = true
-    this.#queueBackup(true)
+    const room = this.#room
+    this.#room = null
+    this.#sendControl = null
+    this.#sendChunk = null
+    await room?.leave().catch(() => {})
   }
 
   async sendControl(peerId: PeerId, message: unknown, options?: {afterChunks?: boolean}): Promise<void> {
@@ -170,7 +152,7 @@ export class TrysteroTransport implements Transport {
       await link.bulk.send(JSON.stringify(message))
       return
     }
-    await link.network.sendControl(message, {target: peerId})
+    await this.#sendControl?.(message, {target: peerId})
   }
 
   /**
@@ -184,11 +166,11 @@ export class TrysteroTransport implements Transport {
       await link.bulk.send(frame)
       return
     }
-    await link.network.sendChunk(frame, {target: peerId})
+    await this.#sendChunk?.(frame, {target: peerId})
   }
 
   maxFrameBytes(peerId: PeerId): number {
-    const max = this.#links.active(peerId)?.pc.sctp?.maxMessageSize
+    const max = this.#links.get(peerId)?.pc.sctp?.maxMessageSize
     return typeof max === 'number' && max > 0 ? max : FALLBACK_MAX_FRAME
   }
 
@@ -197,164 +179,59 @@ export class TrysteroTransport implements Transport {
   }
 
   peers(): PeerId[] {
-    return this.#links.peers()
+    return [...this.#links.keys()]
   }
 
   /**
-   * Whether any signaling socket, on either network, is actually open.
+   * Whether any signaling socket is actually open.
    *
    * This replaces `navigator.onLine`, which reports false on perfectly working
    * connections (VPNs, virtual adapters, several browser quirks) and true on a
    * LAN with no internet at all. An open socket is evidence; a flag is a guess.
    */
   signalingReady(): boolean {
-    return [this.#nostr, this.#backup].some(network => {
-      if (!network) return false
-      try {
-        return Object.values(network.sockets()).some(socket => socket?.readyState === WebSocket.OPEN)
-      } catch {
-        return false
-      }
-    })
-  }
-
-  // ------------------------------------------------------------- networks
-
-  #joinNetwork(
-    name: Network['name'],
-    join: JoinRoom,
-    urls: readonly string[],
-    sockets: Sockets,
-    passive: boolean
-  ): Network {
-    const room = join(
-      {
-        appId: APP_ID,
-        password: this.#code ?? '',
-        relayConfig: {urls: [...urls]},
-        ...(passive ? {passive: true} : {}),
-        rtcConfig: {
-          iceServers: resolveIceServers(this.#localOnly),
-          // Gather host candidates from every interface so a same-LAN pair is
-          // found quickly instead of after a STUN round trip.
-          iceCandidatePoolSize: 2
-        }
-      },
-      this.#topic ?? '',
-      {
-        onJoinError: details => {
-          // A handshake that failed over one network is no failure at all if
-          // the device is connected over the other.
-          if (details.peerId && this.#links.active(details.peerId)) return
-          this.#emitter.emit('error', {error: new AppError('connection-failed', details.error)})
-        }
-      }
-    )
-
-    // Trystero types payloads as its own JSON union; the protocol layer does
-    // the real validation, so these are handled as opaque values here.
-    const control = room.makeAction(CONTROL_ACTION)
-    const chunk = room.makeAction<Uint8Array>(CHUNK_ACTION)
-    const network: Network = {
-      name,
-      room,
-      sendControl: control.send as Send<unknown>,
-      sendChunk: chunk.send,
-      sockets
+    try {
+      const sockets = getRelaySockets() as Record<string, {readyState?: number} | undefined>
+      return Object.values(sockets).some(socket => socket?.readyState === WebSocket.OPEN)
+    } catch {
+      return false
     }
-    control.onMessage = (data, context) => {
-      this.#emitter.emit('control', {peerId: context.peerId, raw: data})
-    }
-    chunk.onMessage = (data, context) => {
-      this.#emitter.emit('chunk', {peerId: context.peerId, data})
-    }
-    room.onPeerJoin = peerId => this.#linkUp(network, peerId)
-    room.onPeerLeave = peerId => this.#linkDown(network, peerId)
-    return network
-  }
-
-  #queueBackup(announcing: boolean): void {
-    const generation = this.#generation
-    this.#backupTask = this.#backupTask
-      .then(() => this.#joinBackup(announcing, generation))
-      .catch(() => {
-        // The primary network carries on alone.
-      })
-  }
-
-  /**
-   * Joins the MQTT network, or rejoins it announcing. Trystero fixes a room's
-   * passivity when it is joined, so turning a listener into an announcer means
-   * leaving and joining again; any connection made over it in between is
-   * handed over to nostr's, or dropped and re-made.
-   */
-  async #joinBackup(announcing: boolean, generation: number): Promise<void> {
-    const {joinRoom, getRelaySockets} = await import('@trystero-p2p/mqtt')
-    if (generation !== this.#generation) return
-
-    const previous = this.#backup
-    if (previous) {
-      this.#backup = null
-      for (const peerId of this.#links.peers()) this.#linkDown(previous, peerId)
-      await previous.room.leave().catch(() => {})
-      if (generation !== this.#generation) return
-    }
-    this.#backup = this.#joinNetwork(
-      'mqtt',
-      joinRoom,
-      MQTT_BROKER_URLS,
-      getRelaySockets as Sockets,
-      !announcing
-    )
   }
 
   // ------------------------------------------------------------ connections
 
   #linkTo(peerId: PeerId): Link {
-    const link = this.#links.active(peerId)
+    const link = this.#links.get(peerId)
     if (!link) throw new AppError('connection-lost', 'no connection to that device')
     return link
   }
 
-  #linkUp(network: Network, peerId: PeerId): void {
-    const pc = network.room.getPeers()[peerId]
-    if (!pc) return
+  #linkUp(peerId: PeerId): void {
+    const pc = this.#room?.getPeers()[peerId]
+    if (!pc || this.#links.get(peerId)?.pc === pc) return
     // Trystero can replace a connection without reporting the old one gone.
-    this.#linkDown(network, peerId)
+    this.#drop(peerId)
 
-    const link: Link = {
-      network,
+    this.#links.set(peerId, {
       pc,
-      // On every connection, not just the one in use: the other end may have
-      // picked a different one to send on, and its chunks arrive here.
       bulk: BulkChannel.open(pc, {
         onChunk: data => this.#emitter.emit('chunk', {peerId, data}),
         onControl: raw => this.#emitter.emit('control', {peerId, raw})
       })
-    }
-    if (this.#links.add(peerId, link) === 'arrived') this.#arrived(peerId)
+    })
+    this.#arrived(peerId)
   }
 
-  #linkDown(network: Network, peerId: PeerId): void {
-    const link = this.#links.linksOf(peerId).find(candidate => candidate.network === network)
-    if (link) this.#drop(peerId, link)
-  }
-
-  #drop(peerId: PeerId, link: Link): void {
+  /** Forgets a connection and reports the device gone — once, however it was noticed. */
+  #drop(peerId: PeerId): void {
+    const link = this.#links.get(peerId)
+    if (!link) return
     link.bulk?.close()
-    const change = this.#links.remove(peerId, link)
-    if (change === 'departed') {
-      this.#paths.delete(peerId)
-      this.#pathSince.delete(peerId)
-      this.#emitter.emit('peerLeave', {peerId})
-      if (this.#links.peers().length === 0) this.#stopPolling()
-    } else if (change === 'switched') {
-      // Still reachable, over the standby. Anything in flight went with the
-      // old connection, so the session hears it as a drop and an immediate
-      // return — the path every transfer already knows how to resume from.
-      this.#emitter.emit('peerLeave', {peerId})
-      this.#arrived(peerId)
-    }
+    this.#links.delete(peerId)
+    this.#paths.delete(peerId)
+    this.#pathSince.delete(peerId)
+    this.#emitter.emit('peerLeave', {peerId})
+    if (this.#links.size === 0) this.#stopPolling()
   }
 
   #arrived(peerId: PeerId): void {
@@ -378,17 +255,15 @@ export class TrysteroTransport implements Transport {
 
   async #pollPaths(): Promise<void> {
     // Connections that died without anyone saying so go first; see isDeadConnection.
-    for (const [peerId, link] of this.#links.entries()) {
-      if (isDeadConnection(link.pc.connectionState)) this.#drop(peerId, link)
+    for (const [peerId, link] of this.#links) {
+      if (isDeadConnection(link.pc.connectionState)) this.#drop(peerId)
     }
 
-    for (const peerId of this.#links.peers()) {
-      const link = this.#links.active(peerId)
-      if (!link) continue
+    for (const [peerId, link] of [...this.#links]) {
       const previous = this.#paths.get(peerId)
       const fresh = await classifyPath(link.pc)
       // The connection may have gone, or been replaced, while stats were read.
-      if (this.#links.active(peerId) !== link) continue
+      if (this.#links.get(peerId) !== link) continue
       const since = this.#pathSince.get(peerId) ?? 0
       const settling =
         fresh.kind === 'direct' &&

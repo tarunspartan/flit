@@ -44,8 +44,8 @@ export const UNKNOWN_PATH: NetworkPath = {
  * connection polled before it has one — is not death either; treating it so
  * once reported brand-new peers dead on arrival.
  *
- * Reporting each death once is LinkTable's job: a connection is forgotten the
- * moment it is reported.
+ * Reporting each death once is the adapter's job: a connection is forgotten
+ * the moment it is reported.
  */
 export function isDeadConnection(state: RTCPeerConnectionState | undefined): boolean {
   return state === 'failed' || state === 'closed'
@@ -84,15 +84,6 @@ export interface Transport {
    * and kept the whole module off the seam.
    */
   signalingReady(): boolean
-  /**
-   * Asks the transport to look for peers harder than it does by default.
-   *
-   * The session calls it when a device it expects cannot be found: a guest
-   * that has met nobody, or a peer that dropped and has not come back. What
-   * that means is the adapter's business — for Trystero, turning the backup
-   * signaling network from listening to announcing. Idempotent.
-   */
-  widenSearch(): void
   on<K extends keyof TransportEvents>(
     event: K,
     listener: (payload: TransportEvents[K]) => void

@@ -13,7 +13,6 @@ import {sanitizeFilename, sanitizeRelativePath, uniqueFilename} from '../src/lib
 import {SpeedMeter} from '../src/lib/utils/speed.ts'
 import {agreeKind, bandwidthCost, classifyPath, isPrivate, sameSubnet, steadyPath} from '../src/lib/transport/pathClassifier.ts'
 import {isDeadConnection} from '../src/lib/transport/Transport.ts'
-import {LinkTable} from '../src/lib/transport/LinkTable.ts'
 import {formatBytes, formatDuration} from '../src/lib/utils/format.ts'
 import {takeSharedFiles} from '../src/lib/utils/shareTarget.ts'
 import {checkCapacity} from '../src/lib/storage/estimate.ts'
@@ -759,51 +758,6 @@ describe('noticing a link die without being told', () => {
     expect(isDeadConnection(undefined)).toBe(false)
     expect(isDeadConnection('new')).toBe(false)
     expect(isDeadConnection('connecting')).toBe(false)
-  })
-})
-
-describe('one device, several connections', () => {
-  // Signaling runs over two networks, so one device can be reached twice.
-
-  it('announces a device once, however many connections reach it', () => {
-    const links = new LinkTable<string>()
-    expect(links.add('phone', 'nostr')).toBe('arrived')
-    expect(links.add('phone', 'mqtt')).toBe('standby')
-    expect(links.peers()).toEqual(['phone'])
-    expect(links.active('phone')).toBe('nostr')
-  })
-
-  it('hands over to the standby when the connection in use goes', () => {
-    const links = new LinkTable<string>()
-    links.add('phone', 'nostr')
-    links.add('phone', 'mqtt')
-    expect(links.remove('phone', 'nostr')).toBe('switched')
-    expect(links.active('phone')).toBe('mqtt')
-    expect(links.remove('phone', 'mqtt')).toBe('departed')
-    expect(links.peers()).toEqual([])
-  })
-
-  it('says nothing when only a standby goes', () => {
-    const links = new LinkTable<string>()
-    links.add('phone', 'nostr')
-    links.add('phone', 'mqtt')
-    expect(links.remove('phone', 'mqtt')).toBe('none')
-    expect(links.active('phone')).toBe('nostr')
-  })
-
-  it('reports each death once, however often it is noticed', () => {
-    // The poll sees a dead connection, and Trystero may report it again later.
-    const links = new LinkTable<string>()
-    links.add('phone', 'nostr')
-    expect(links.remove('phone', 'nostr')).toBe('departed')
-    expect(links.remove('phone', 'nostr')).toBe('none')
-  })
-
-  it('can welcome back a device that went and came again', () => {
-    const links = new LinkTable<string>()
-    links.add('phone', 'nostr')
-    links.remove('phone', 'nostr')
-    expect(links.add('phone', 'nostr')).toBe('arrived')
   })
 })
 

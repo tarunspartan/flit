@@ -161,8 +161,8 @@ export const STUN_URLS = [
  * relay.froth.zone had since gone dark and were replaced.
  *
  * Every device on a build uses this same list, which is what guarantees two
- * devices share a relay. Relay operators come and go, so re-run that check if
- * pairing gets flaky again.
+ * devices share a relay. Relay operators come and go: `npm run check:signaling`
+ * runs that check, and .github/workflows/signaling-health.yml runs it weekly.
  */
 export const RELAY_URLS: readonly string[] = [
   'wss://purplerelay.com',
@@ -174,29 +174,3 @@ export const RELAY_URLS: readonly string[] = [
   'wss://basspistol.org',
   'wss://bucket.coracle.social'
 ]
-
-/**
- * The backup signaling network: public MQTT brokers.
- *
- * Nostr relays are run by volunteers and come and go — four of Trystero's five
- * defaults for this app were dead, and two of the ones above died within weeks.
- * These brokers are run by companies (EMQX, HiveMQ) and the Eclipse Foundation,
- * so they fail for unrelated reasons. Every device listens here all the time,
- * which costs a few sockets, and announces here only when nostr has not
- * delivered the device it expects (see SEARCH_WIDEN_MS). Checked with the same
- * publish-to-subscriber round trip as the relays, on the same date.
- */
-export const MQTT_BROKER_URLS: readonly string[] = [
-  'wss://broker.emqx.io:8084/mqtt',
-  'wss://broker.hivemq.com:8884/mqtt',
-  'wss://test.mosquitto.org:8081/mqtt'
-]
-
-/**
- * How long a device may miss a peer it expects before it also announces on the
- * backup network: a guest that has met nobody since joining, or a peer that
- * dropped and has not come back. Long enough that working nostr relays have
- * already done it — they typically pair in one to three seconds — and short
- * enough that a broken one costs a few seconds rather than a failed pairing.
- */
-export const SEARCH_WIDEN_MS = 6000

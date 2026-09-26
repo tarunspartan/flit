@@ -1,5 +1,5 @@
 import {afterEach, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest'
-import {LIMITS, SEARCH_WIDEN_MS, TIMEOUTS} from '../src/lib/core/config.ts'
+import {LIMITS, TIMEOUTS} from '../src/lib/core/config.ts'
 import {SessionManager, type TransportFactory} from '../src/lib/session/SessionManager.ts'
 import {MemoryNetwork, MemoryTransport} from '../src/lib/transport/MemoryTransport.ts'
 
@@ -297,49 +297,3 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 10_000): Promise<
     await new Promise(resolve => setTimeout(resolve, 5))
   }
 }
-
-describe('looking harder when a device is missing', () => {
-  // The transport keeps a backup signaling network listening, and only
-  // announces on it when the session says a device it expects is missing.
-  const past = SEARCH_WIDEN_MS + 4000
-
-  it('widens the search for a guest that meets nobody', async () => {
-    const {built, open} = harness()
-    const guest = track(open())
-    await guest.joinRoom('K7XM42QW9PZT')
-    await vi.advanceTimersByTimeAsync(past)
-    expect(built[0]!.widenedSearches).toBeGreaterThan(0)
-  })
-
-  it('leaves a host that is simply waiting alone', async () => {
-    // Guests do the looking; a host with nobody yet costs nothing extra.
-    const {built, open} = harness()
-    const host = track(open())
-    await host.openRoom()
-    await vi.advanceTimersByTimeAsync(past)
-    expect(built[0]!.widenedSearches).toBe(0)
-  })
-
-  it('does not bother while everyone expected is here', async () => {
-    const {built, factory, open} = harness()
-    const host = track(open())
-    await host.openRoom()
-    const guest = track(new SessionManager(factory))
-    await guest.joinRoom(host.snapshot().code!)
-    await vi.advanceTimersByTimeAsync(past)
-    expect(built.map(transport => transport.widenedSearches)).toEqual([0, 0])
-  })
-
-  it('widens the search for a device that dropped and has not come back', async () => {
-    const {built, factory, open} = harness()
-    const host = track(open())
-    await host.openRoom()
-    const guest = track(new SessionManager(factory))
-    await guest.joinRoom(host.snapshot().code!)
-    await settle()
-
-    built[1]!.vanish()
-    await vi.advanceTimersByTimeAsync(past)
-    expect(built[0]!.widenedSearches).toBeGreaterThan(0)
-  })
-})
