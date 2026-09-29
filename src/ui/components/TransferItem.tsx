@@ -1,8 +1,8 @@
-import {memo, useState, type ReactNode} from 'react'
+import {memo, useState} from 'react'
 import type {NetworkPath} from '../../lib/transport/Transport.ts'
 import type {SharedFileView, TransferView} from '../../lib/transfer/states.ts'
 import {isMoving, isQueued, isTerminal} from '../../lib/transfer/states.ts'
-import {formatBytes, formatDuration, formatPercent, formatSpeed} from '../../lib/utils/format.ts'
+import {formatBytes, formatPercent, formatSpeed} from '../../lib/utils/format.ts'
 import {session} from '../store.ts'
 import {Icon, PathCost, ProgressBar, type IconName} from './common.tsx'
 
@@ -68,13 +68,8 @@ interface Action {
 }
 
 /**
- * The rules for what a receiver can do, in one place.
- *
- * A file appears as a full card on its own and as a line inside a batch, and
- * the two used to carry their own copy of this. Two copies of a state machine
- * drift: a state handled in one and forgotten in the other is a button that
- * exists in the list view and not in the card. The rules live here; the two
- * components only decide how to draw them.
+ * The rules for what a receiver can do, in one place: the same buttons
+ * whether a file arrived on its own or as one of a batch.
  */
 function actionsFor(transfer: TransferView): Action[] {
   const {id, state} = transfer
@@ -112,414 +107,179 @@ function actionsFor(transfer: TransferView): Action[] {
 }
 
 /**
- * Which way the bytes are going, for the one line that does not otherwise say.
- *
- * A card carries direction twice over — an upload glyph and "Sending", a
- * download glyph and "Receiving". A row has neither: no icon, and while it is
- * moving the state is replaced by a bare percentage, so a file going out and a
- * file coming in render identically next to identical bars. This is the
- * smallest mark that separates them.
+ * Which way the bytes are going. While a file moves its state is a bare
+ * percentage, so a file going out and one coming in would read identically;
+ * this is the smallest mark that separates them.
  */
 function Way({sending}: {sending: boolean}) {
   return <Icon name={sending ? 'upload' : 'download'} size={12} />
 }
 
-/* ------------------------------------------------------------------- cards */
-
-/** One dropped file, with a line per device it is going to. */
-export const SharedFile = memo(function SharedFile({file, paths}: {file: SharedFileView; paths: PathLookup}) {
-  const done = file.transfers.filter(transfer => transfer.state === 'COMPLETED').length
-
-  return (
-    <li className="shared">
-      <div className="shared__head">
-        <span className="shared__icon" aria-hidden="true">
-          <Icon name="upload" size={17} />
-        </span>
-        <div className="shared__ident">
-          <span className="shared__name" title={file.name}>
-            {file.name}
-          </span>
-          <span className="shared__meta">
-            {formatBytes(file.size)}
-            {file.transfers.length > 0 && (
-              <>
-                <span className="dot">·</span>
-                {done} of {file.transfers.length} device{file.transfers.length === 1 ? '' : 's'}
-              </>
-            )}
-          </span>
-        </div>
-        <button
-          type="button"
-          className="button button--icon"
-          onClick={() => session.unshare(file.id)}
-          aria-label={`Stop sharing ${file.name}`}
-          title="Stop sharing"
-        >
-          <Icon name="x" size={16} />
-        </button>
-      </div>
-
-      <SharedBody file={file} paths={paths} />
-    </li>
-  )
-})
+/* ------------------------------------------------------------------ states */
 
 /**
- * Who this file is going to and how each of them is doing.
- *
- * Shared by the card and the batch row for the same reason the receiving side
- * shares one body: a file offered as part of a batch is not a lesser file, and
- * its per-device progress should not depend on how it was dropped.
+ * Why a file failed, when that says more than "Failed" does. A decline or a
+ * cancel is its own explanation; a stall, a lost connection or a failed
+ * integrity check is not.
  */
-function SharedBody({file, paths}: {file: SharedFileView; paths: PathLookup}) {
-  if (file.transfers.length === 0) {
-    return (
-      <p className="shared__waiting">
-        Waiting for a device to join — it will be offered this file automatically.
-      </p>
-    )
-  }
-  return (
-    <ul className="peerlines">
-      {file.transfers.map(transfer => (
-        <PeerLine key={transfer.id} transfer={transfer} path={paths.get(transfer.peerId)} />
-      ))}
-    </ul>
-  )
-}
-
-/** How one device is doing with the file above it, and over what. */
-const PeerLine = memo(function PeerLine({transfer, path}: {transfer: TransferView; path: NetworkPath | undefined}) {
-  const {state} = transfer
-
-  return (
-    <li className="row row--peer">
-      <span className="row__name">{transfer.peerName}</span>
-      {/* Per device, not per file: a laptop on the same Wi-Fi and a phone on
-          mobile data are the same file costing two very different things. */}
-      {path && !isTerminal(state) && <PathCost kind={path.kind} />}
-
-      {isMoving(state) && (
-        <span className="row__bar">
-          <ProgressBar value={transfer.progress} state={state === 'RECONNECTING' ? 'error' : 'active'} />
-        </span>
-      )}
-
-      <span
-        className={`row__state state--${tone(transfer)}`}
-        title={state === 'TRANSFERRING' ? 'Sending' : undefined}
-        aria-label={
-          state === 'TRANSFERRING'
-            ? `Sending, ${formatPercent(transfer.progress)}, ${formatSpeed(transfer.speed)}`
-            : undefined
-        }
-      >
-        {state === 'COMPLETED' && <Icon name="check" size={14} />}
-        {state === 'TRANSFERRING' && <Way sending />}
-        {state === 'TRANSFERRING'
-          ? `${formatPercent(transfer.progress)} · ${formatSpeed(transfer.speed)}`
-          : label(transfer, 'send')}
-      </span>
-
-      <RowActions transfer={transfer} sending />
-    </li>
-  )
-})
-
-/** A file another device is offering to this one. */
-export const IncomingFile = memo(function IncomingFile({transfer, path}: {transfer: TransferView; path: NetworkPath | undefined}) {
-  const {state} = transfer
-  const queued = isQueued(transfer)
-
-  return (
-    // A queued card is WAITING_FOR_ACCEPT on the wire but not in the UI — the
-    // decision has been made and it is waiting its turn. Naming it for what it
-    // is keeps the "needs you" styling off it: the accent ring, and the mobile
-    // rule that stretches an awaiting card's buttons to full thumb width, which
-    // blew "Not now" up to 182px and wrapped the sentence beside it.
-    <li className={`incoming incoming--${queued ? 'queued' : state.toLowerCase()}`}>
-      <div className="incoming__head">
-        <span className="incoming__icon" aria-hidden="true">
-          <Icon name="download" size={17} />
-        </span>
-        <div className="incoming__ident">
-          <span className="incoming__name" title={transfer.name}>
-            {transfer.name}
-          </span>
-          {/* Every field is its own element, and the separators are siblings
-              between them. A bare text node would merge with its neighbour on
-              narrow screens, where the dots give way to spacing. */}
-          <span className="incoming__meta">
-            <span className="meta__field">{formatBytes(transfer.size)}</span>
-            <span className="dot">·</span>
-            <span className="meta__field">from {transfer.peerName}</span>
-            {/* No separator before the badge: a pill is already visually
-                self-contained, and a dot beside it reads as a stray mark. */}
-            {path && <PathCost kind={path.kind} />}
-          </span>
-        </div>
-        {/* An undecided file has no chip: its Download button is its state, and
-            a "Waiting" label beside a button that says what to do is noise. */}
-        {(queued || state !== 'WAITING_FOR_ACCEPT') && (
-          <span className={`incoming__state state--${tone(transfer)}`}>
-            {state === 'COMPLETED' && <Icon name="check" size={15} />}
-            {state === 'FAILED' && <Icon name="alert" size={15} />}
-            {label(transfer, 'receive')}
-          </span>
-        )}
-      </div>
-
-      <IncomingBody transfer={transfer} path={path} />
-    </li>
-  )
-})
-
-/**
- * Everything about a transfer below its name: storage advice, live progress
- * with speed and bytes, the outcome, errors, controls, and the details table.
- *
- * Deliberately shared by the card and the batch row. Batching is only about
- * *offering* several files in one go — it is not a reduced-feature mode, and a
- * file that happened to arrive in a batch had lost its speed, its byte counts
- * and its details table purely because of where it was drawn. One body means
- * the two densities cannot drift apart again.
- */
-function IncomingBody({transfer, path}: {transfer: TransferView; path?: NetworkPath}) {
-  const [expanded, setExpanded] = useState(false)
-  const {state} = transfer
-  // Anything that ran has numbers worth keeping, whether it finished or not.
-  // Details used to vanish the moment a transfer failed, which is exactly when
-  // "how far did it get" is the question being asked.
-  const ran = isMoving(state) || transfer.startedAt !== null
-
-  return (
-    <>
-      {transfer.storageWarning && <Note tone="warn">{transfer.storageWarning}</Note>}
-
-      {isMoving(state) && (
-        <div className="progressblock">
-          <ProgressBar
-            value={transfer.progress}
-            state={state === 'RECONNECTING' ? 'error' : 'active'}
-          />
-          <Stats transfer={transfer} />
-        </div>
-      )}
-
-      <Outcome transfer={transfer} />
-      <CardActions transfer={transfer} />
-
-      {ran && (
-        <>
-          <button
-            type="button"
-            className={`details-toggle ${expanded ? 'is-open' : ''}`}
-            onClick={() => setExpanded(value => !value)}
-            aria-expanded={expanded}
-          >
-            <Icon name="chevron" size={15} />
-            Details
-          </button>
-          {expanded && <Details transfer={transfer} path={path} />}
-        </>
-      )}
-    </>
-  )
-}
-
-/**
- * The same four facts in the same order, every time: how far, how much, how
- * fast, how long left.
- *
- * States that cannot answer one simply leave it out. They used to substitute a
- * sentence instead — "Verifying…" under a chip already reading "Verifying",
- * and "Reconnecting — resumes from 1.2 GB" under one reading "Reconnecting",
- * on a line that already said "1.2 GB / 3.02 GB". Both were the same fact
- * twice; the chip above is where the state is named.
- */
-function Stats({transfer}: {transfer: TransferView}) {
-  const running = transfer.state === 'TRANSFERRING'
-  return (
-    <div className="stats">
-      <span className="stats__percent">{formatPercent(transfer.progress)}</span>
-      <span className="dot">·</span>
-      <span>
-        {formatBytes(transfer.bytesTransferred)} / {formatBytes(transfer.size)}
-      </span>
-      {running && (
-        <>
-          <span className="dot">·</span>
-          <span className="stats__speed">{formatSpeed(transfer.speed)}</span>
-          <span className="dot">·</span>
-          <span>
-            {transfer.etaSeconds === null
-              ? 'estimating…'
-              : `~${formatDuration(transfer.etaSeconds)} left`}
-          </span>
-        </>
-      )}
-    </div>
-  )
-}
-
-/** One line of consequence, in the colour of what it means. */
-function Note({tone, children}: {tone: 'ok' | 'warn' | 'bad'; children: ReactNode}) {
-  return (
-    <p className={`note-line note-line--${tone}`}>
-      <Icon name={tone === 'ok' ? 'shield' : 'alert'} size={15} />
-      <span>{children}</span>
-    </p>
-  )
-}
-
-/**
- * What became of it — said once, or not at all.
- *
- * The chip beside the filename is the headline. A message earns its own line
- * only by adding something the headline does not already carry.
- */
-function Outcome({transfer}: {transfer: TransferView}) {
+function failureReason(transfer: TransferView): string | null {
   const {state, error} = transfer
-
-  if (state === 'COMPLETED') {
-    return (
-      <Note tone="ok">
-        {transfer.verified ? 'Verified. ' : ''}
-        {transfer.savedToDisk ? 'Saved where you chose.' : 'Saved to your downloads.'}
-      </Note>
-    )
-  }
-
-  if (!error || !isTerminal(state) || SELF_EVIDENT.has(error.code)) return null
-  return <Note tone="bad">{error.message}</Note>
+  if (!isTerminal(state) || !error || SELF_EVIDENT.has(error.code)) return null
+  return error.message
 }
 
-/** The card's controls: full-size, labelled, one per rule. */
-function CardActions({transfer}: {transfer: TransferView}) {
-  const actions = actionsFor(transfer)
-  if (actions.length === 0) return null
-
+/**
+ * Where a file coming in stands, in the same words on a card and in a row:
+ * the percentage and the speed while it moves, a tick once it has landed.
+ */
+function ReceiveState({transfer}: {transfer: TransferView}) {
+  const {state} = transfer
+  const running = state === 'TRANSFERRING'
   return (
-    <div className="incoming__actions">
-      {/* "the current one" rather than "the current download": measured at 251px
-          against a 230px budget on a 393px phone, it wrapped to two lines. This
-          is 216px. */}
-      {isQueued(transfer) && (
-        <span className="incoming__queued">Starts when the current one finishes.</span>
-      )}
-      {actions.map(action =>
-        action.tone === 'ghost' ? (
-          <button key={action.key} type="button" className="button button--ghost" onClick={action.run}>
-            {action.label}
-          </button>
-        ) : (
-          <button
-            key={action.key}
-            type="button"
-            className={`button ${action.tone === 'primary' ? 'button--primary' : 'button--small'}`}
-            onClick={action.run}
-          >
-            <Icon name={action.icon} size={action.tone === 'primary' ? 16 : 14} /> {action.label}
-          </button>
-        )
-      )}
-    </div>
+    <span
+      className={`row__state state--${tone(transfer)}`}
+      title={state === 'COMPLETED' ? 'SHA-256 verified' : running ? 'Receiving' : undefined}
+      aria-label={
+        running ? `Receiving, ${formatPercent(transfer.progress)}, ${formatSpeed(transfer.speed)}` : undefined
+      }
+    >
+      {state === 'COMPLETED' && <Icon name="check" size={13} />}
+      {running && <Way sending={false} />}
+      {running
+        ? transfer.speed === null
+          ? formatPercent(transfer.progress)
+          : `${formatPercent(transfer.progress)} · ${formatSpeed(transfer.speed)}`
+        : label(transfer, 'receive')}
+    </span>
+  )
+}
+
+/** One shared file's progress, across every device it is going to. */
+function sharedProgress(file: SharedFileView): number {
+  if (file.transfers.length === 0) return 0
+  return (
+    file.transfers.reduce((sum, t) => sum + (t.state === 'COMPLETED' ? 1 : t.progress), 0) /
+    file.transfers.length
+  )
+}
+
+/** "Pixel 8", or "3 devices" when a file went to several. */
+function recipients(transfers: readonly TransferView[]): string {
+  const names = [...new Set(transfers.map(t => t.peerName))]
+  return names.length === 1 ? names[0]! : `${names.length} devices`
+}
+
+/**
+ * Where a file going out stands, summed across every device it was offered
+ * to — "Waiting for Pixel 8", "40% · 1 of 3", "Sent to 2", or what became of
+ * it when it did not go, rather than the "0%" a declined file used to show.
+ */
+function SendState({file}: {file: SharedFileView}) {
+  const total = file.transfers.length
+  const sent = file.transfers.filter(transfer => transfer.state === 'COMPLETED').length
+  const running = file.transfers.some(transfer => !isTerminal(transfer.state))
+  const moving = file.transfers.some(transfer => isMoving(transfer.state))
+  const only = total === 1 ? file.transfers[0]! : null
+  const ended = total > 0 && !running && sent < total
+
+  let content
+  if (total === 0) content = 'Waiting for a device'
+  else if (sent === total)
+    content = (
+      <>
+        <Icon name="check" size={13} />
+        {total > 1 ? `Sent to ${total}` : 'Sent'}
+      </>
+    )
+  else if (moving)
+    content = (
+      <>
+        <Way sending />
+        {formatPercent(sharedProgress(file))}
+        {total > 1 && ` · ${sent} of ${total}`}
+      </>
+    )
+  else if (running) content = sent === 0 ? `Waiting for ${recipients(file.transfers)}` : `Sent to ${sent} of ${total}`
+  else if (ended && only) content = label(only, 'send')
+  else content = `Sent to ${sent} of ${total}`
+
+  const className =
+    sent === total && total > 0 ? 'row__state--completed' : ended && only ? `state--${tone(only)}` : ''
+  return (
+    <span className={`row__state ${className}`} title={moving ? 'Sending' : undefined}>
+      {content}
+    </span>
   )
 }
 
 /* -------------------------------------------------------------------- rows */
 
 /**
- * One file inside a batch, on a single line.
- *
- * The full card carries progress numbers, storage advice and a details table.
- * Five of those stacked is exactly the wall batching exists to avoid, so an
- * opened batch gets rows instead: what you need at a glance, plus whatever you
- * might actually act on. A file shared on its own still gets the card.
+ * One file inside a drop of several, on a single line — the same line whether
+ * it is coming in or going out: its name, its size, a bar while it moves,
+ * where it stands, and what you can do about it. Nothing opens beneath it; the
+ * reason a file failed shows under its name.
  */
-export const IncomingRow = memo(function IncomingRow({transfer, path}: {transfer: TransferView; path?: NetworkPath}) {
-  const [open, setOpen] = useState(false)
-  const {state} = transfer
-  const queued = isQueued(transfer)
-  const offered = state === 'WAITING_FOR_ACCEPT' && !queued
+export const IncomingRow = memo(function IncomingRow({transfer}: {transfer: TransferView}) {
+  const offered = transfer.state === 'WAITING_FOR_ACCEPT' && !isQueued(transfer)
+  const note = failureReason(transfer) ?? transfer.storageWarning
 
   return (
-    <li className={`row ${open ? 'row--open' : ''}`}>
+    <li className="row">
       <span className="row__name" title={transfer.name}>
         {transfer.name}
       </span>
       <span className="row__size">{formatBytes(transfer.size)}</span>
-
-      {isMoving(state) && (
+      {isMoving(transfer.state) && (
         <span className="row__bar">
-          <ProgressBar value={transfer.progress} state={state === 'RECONNECTING' ? 'error' : 'active'} />
+          <ProgressBar value={transfer.progress} state={transfer.state === 'RECONNECTING' ? 'error' : 'active'} />
         </span>
       )}
-
       {/* An undecided file shows its Download button where the state would be —
           the button is the state. */}
-      {!offered && (
-        <span
-          className={`row__state state--${tone(transfer)}`}
-          title={state === 'TRANSFERRING' ? 'Receiving' : undefined}
-          aria-label={
-            state === 'TRANSFERRING'
-              ? `Receiving, ${formatPercent(transfer.progress)}`
-              : undefined
-          }
-        >
-          {state === 'COMPLETED' && <Icon name="check" size={13} />}
-          {state === 'TRANSFERRING' && <Way sending={false} />}
-          {state === 'TRANSFERRING' ? formatPercent(transfer.progress) : label(transfer, 'receive')}
-        </span>
-      )}
-
-      {/* Compact controls only while closed. Opened, the body below carries the
-          same actions at full size, and showing both would be two ways to press
-          the same button. */}
-      {!open && <RowActions transfer={transfer} />}
-
-      <button
-        type="button"
-        className={`row__toggle ${open ? 'is-open' : ''}`}
-        onClick={() => setOpen(value => !value)}
-        aria-expanded={open}
-        aria-label={`${open ? 'Hide' : 'Show'} details for ${transfer.name}`}
-        title={open ? 'Hide details' : 'Details'}
-      >
-        <Icon name="chevron" size={14} />
-      </button>
-
-      {!open && transfer.storageWarning && (
-        <p className="row__warning">
-          <Icon name="alert" size={13} />
-          {transfer.storageWarning}
-        </p>
-      )}
-
-      {open && (
-        <div className="row__body">
-          <IncomingBody transfer={transfer} path={path} />
-        </div>
-      )}
+      {!offered && <ReceiveState transfer={transfer} />}
+      <RowActions transfer={transfer} />
+      {note && <Warning bad={failureReason(transfer) !== null}>{note}</Warning>}
     </li>
   )
 })
+
+export const SharedRow = memo(function SharedRow({file}: {file: SharedFileView}) {
+  const moving = file.transfers.some(transfer => isMoving(transfer.state))
+  return (
+    <li className="row">
+      <span className="row__name" title={file.name}>
+        {file.name}
+      </span>
+      <span className="row__size">{formatBytes(file.size)}</span>
+      {moving && (
+        <span className="row__bar">
+          <ProgressBar value={sharedProgress(file)} state="active" />
+        </span>
+      )}
+      <SendState file={file} />
+      <SendActions files={[file]} />
+    </li>
+  )
+})
+
+/** Storage advice before you decide, or why a file failed after. A sentence, so a line of its own. */
+function Warning({bad, children}: {bad: boolean; children: string}) {
+  return (
+    <p className={`row__warning ${bad ? 'row__warning--bad' : ''}`}>
+      <Icon name="alert" size={13} />
+      {children}
+    </p>
+  )
+}
 
 /**
  * A row's controls: the primary one keeps its label because it is the whole
  * point of the row, the rest shrink to icons so the controls cost a line's
  * height and no more.
- *
- * `sending` narrows the rules to the ones that make sense for a file leaving
- * this device — there is nothing to accept or decline about your own file.
  */
-function RowActions({transfer, sending = false}: {transfer: TransferView; sending?: boolean}) {
-  const actions = actionsFor(transfer).filter(
-    action => !sending || !['accept', 'decline', 'unqueue', 'cancel'].includes(action.key)
-  )
+function RowActions({transfer}: {transfer: TransferView}) {
+  const actions = actionsFor(transfer)
   if (actions.length === 0) return <span className="row__pad" />
 
   return (
@@ -551,145 +311,245 @@ function RowActions({transfer, sending = false}: {transfer: TransferView; sendin
   )
 }
 
-/**
- * One file you are sending, on a single line.
- *
- * A room holds several devices, so a file is several transfers. The row shows
- * their average rather than one line each — the per-device breakdown is worth a
- * card, and a card is what a file shared on its own gets.
- */
-export const SharedRow = memo(function SharedRow({file, paths}: {file: SharedFileView; paths: PathLookup}) {
-  const [open, setOpen] = useState(false)
-  const total = file.transfers.length
-  const sent = file.transfers.filter(transfer => transfer.state === 'COMPLETED').length
-  const running = file.transfers.some(transfer => !isTerminal(transfer.state))
-  const started = file.transfers.some(transfer => transfer.state !== 'WAITING_FOR_ACCEPT')
-  const progress = total === 0 ? 0 : file.transfers.reduce((sum, t) => sum + t.progress, 0) / total
-
+/** Retry whatever failed to send, and stop sharing — for one file or for a whole drop. */
+function SendActions({files}: {files: readonly SharedFileView[]}) {
+  const retryable = files.flatMap(file => file.transfers).filter(transfer => transfer.canRetry)
+  const what = files.length === 1 ? files[0]!.name : `all ${files.length} files`
   return (
-    <li className={`row ${open ? 'row--open' : ''}`}>
-      <span className="row__name" title={file.name}>
-        {file.name}
-      </span>
-      <span className="row__size">{formatBytes(file.size)}</span>
-
-      {running && started && (
-        <span className="row__bar">
-          <ProgressBar value={progress} state="active" />
-        </span>
-      )}
-
-      <span
-        className={`row__state ${sent === total && total > 0 ? 'row__state--completed' : ''}`}
-        title={running && started ? 'Sending' : undefined}
-      >
-        {total === 0 ? (
-          'Waiting'
-        ) : sent === total ? (
-          <>
-            <Icon name="check" size={13} />
-            {total > 1 ? `Sent to ${total}` : 'Sent'}
-          </>
-        ) : started ? (
-          <>
-            <Way sending />
-            {formatPercent(progress)}
-          </>
-        ) : (
-          'Offered'
-        )}
-      </span>
-
-      <span className="row__acts">
+    <span className="row__acts">
+      {retryable.length > 0 && (
         <button
           type="button"
           className="button button--icon button--tiny"
-          onClick={() => session.unshare(file.id)}
-          aria-label={`Stop sharing ${file.name}`}
-          title="Stop sharing"
+          onClick={() => retryable.forEach(transfer => session.retry(transfer.id))}
+          aria-label={`Retry ${what}`}
+          title="Retry"
         >
-          <Icon name="x" size={14} />
+          <Icon name="retry" size={14} />
         </button>
-      </span>
-
+      )}
       <button
         type="button"
-        className={`row__toggle ${open ? 'is-open' : ''}`}
-        onClick={() => setOpen(value => !value)}
-        aria-expanded={open}
-        aria-label={`${open ? 'Hide' : 'Show'} devices for ${file.name}`}
-        title={open ? 'Hide devices' : 'Devices'}
+        className="button button--icon button--tiny"
+        onClick={() => files.forEach(file => session.unshare(file.id))}
+        aria-label={`Stop sharing ${what}`}
+        title={files.length === 1 ? 'Stop sharing' : 'Stop sharing all'}
       >
-        <Icon name="chevron" size={14} />
+        <Icon name="x" size={14} />
       </button>
-
-      {open && (
-        <div className="row__body">
-          <SharedBody file={file} paths={paths} />
-        </div>
-      )}
-    </li>
+    </span>
   )
-})
+}
 
-/* ----------------------------------------------------------------- details */
+/* ------------------------------------------------------------------- cards */
 
-const STORAGE_LABEL: Record<string, string> = {
-  filesystem: 'Streamed to disk',
-  opfs: 'Browser storage, then download',
-  memory: 'In memory (small files only)'
+/*
+ * One card per drop, whether it held one file or a hundred.
+ *
+ * A file sent on its own used to get a card of its own design — full-size
+ * buttons, a speed line, a details panel, a line per device — while the same
+ * file sent alongside others got a compact row with different controls. Two
+ * layouts for one thing meant two things to learn and two places for the same
+ * bug to be fixed in one and not the other. Now every drop is the same card:
+ * a header that says what it is and where it stands, and, when it holds more
+ * than one file, the same rows inside it. A drop of one is just the header,
+ * carrying that file's own state and buttons.
+ */
+
+export function sameItems<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a.length === b.length && a.every((item, i) => item === b[i])
+}
+
+/** Drops are regrouped every render; an unchanged one is the same files in the same order. */
+function sameDrop<T>(
+  prev: {files: readonly T[]; paths: PathLookup},
+  next: {files: readonly T[]; paths: PathLookup}
+): boolean {
+  return prev.paths === next.paths && sameItems(prev.files, next.files)
+}
+
+/** Show / Hide for a drop's files. The count is on the button: that is the question it answers. */
+function DropToggle({open, count, onToggle}: {open: boolean; count: number; onToggle: () => void}) {
+  return (
+    <button
+      type="button"
+      className={`batch__toggle ${open ? 'is-open' : ''}`}
+      onClick={onToggle}
+      aria-expanded={open}
+    >
+      {open ? 'Hide' : `Show ${count}`}
+      <Icon name="chevron" size={14} />
+    </button>
+  )
 }
 
 /**
- * Seconds the transfer actually ran, or null while it is still running.
- *
- * Includes the verification tail, which finalizes an already-built hash tree
- * rather than re-reading the file, so it is short enough not to distort this.
+ * How far along a whole drop is, drawn on the card's bottom edge — where it
+ * costs three pixels and never moves anything. Measured in bytes, not files:
+ * counted by files, three photos and a video sat at three quarters for the
+ * whole of the video.
  */
-function elapsedSeconds(transfer: TransferView): number | null {
-  if (transfer.startedAt === null || transfer.endedAt === null) return null
-  const seconds = (transfer.endedAt - transfer.startedAt) / 1000
-  return seconds > 0 ? seconds : null
-}
-
-function Details({transfer, path}: {transfer: TransferView; path?: NetworkPath}) {
-  const done = transfer.state === 'COMPLETED'
-  const elapsed = elapsedSeconds(transfer)
-
-  const rows: [string, string][] = [
-    ['From', transfer.peerName],
-    ['Transferred', `${formatBytes(transfer.bytesTransferred)} / ${formatBytes(transfer.size)}`],
-    // The live meter reads from a rolling window, so it has nothing to report
-    // once the bytes stop. Finished transfers get the average over the run
-    // instead of an empty row.
-    done
-      ? ['Average speed', formatSpeed(elapsed === null ? null : transfer.bytesTransferred / elapsed)]
-      : ['Speed', formatSpeed(transfer.speed)],
-    ['Type', transfer.mimeType]
-  ]
-  if (done && elapsed !== null) rows.push(['Took', formatDuration(elapsed)])
-  // The round trip is the honest check on the label above: a link that really
-  // is local answers in single-digit milliseconds, and one that says "Local
-  // network" while measuring 25ms is not going the way it claims.
-  if (path) {
-    const rtt = path.roundTripMs === null ? '' : ` · ${Math.round(path.roundTripMs)} ms`
-    rows.push(['Connection', `${path.network}${rtt}`])
-  }
-  if (transfer.storageKind) {
-    rows.push(['Storage', STORAGE_LABEL[transfer.storageKind] ?? transfer.storageKind])
-  }
-  if (transfer.state === 'COMPLETED') {
-    rows.push(['Integrity', transfer.verified ? 'SHA-256 chunk tree verified' : 'Not verified'])
-  }
-
+function DropRail({value, complete}: {value: number; complete: boolean}) {
   return (
-    <dl className="details">
-      {rows.map(([label, value]) => (
-        <div className="details__row" key={label}>
-          <dt>{label}</dt>
-          <dd>{value}</dd>
-        </div>
-      ))}
-    </dl>
+    <span className="batch__rail">
+      <ProgressBar value={complete ? 1 : value} state={complete ? 'done' : 'active'} />
+    </span>
   )
 }
+
+function bytesDone<T extends {size: number}>(files: readonly T[], progressOf: (file: T) => number): number {
+  const total = files.reduce((sum, file) => sum + file.size, 0)
+  if (total === 0) return 0
+  return files.reduce((sum, file) => sum + file.size * progressOf(file), 0) / total
+}
+
+/** A drop you are sending. */
+export const SharedDrop = memo(function SharedDrop({files, paths}: {files: SharedFileView[]; paths: PathLookup}) {
+  const [open, setOpen] = useState(false)
+  const single = files.length === 1 ? files[0]! : null
+  const transfers = files.flatMap(file => file.transfers)
+  const bytes = files.reduce((total, file) => total + file.size, 0)
+  // Sent once it has reached a device and nothing more is pending for it. A
+  // device that dropped out, or declined, does not hold every other file at
+  // "0 of 3 sent" — the row says which devices have it, and offers a retry.
+  const done = files.filter(
+    file =>
+      file.transfers.some(t => t.state === 'COMPLETED') &&
+      file.transfers.every(t => isTerminal(t.state))
+  ).length
+  const started = transfers.some(t => t.state !== 'WAITING_FOR_ACCEPT')
+  // A drop goes to every device in the room, and they need not be reachable
+  // the same way. One label is only honest when they all agree.
+  const kinds = new Set(transfers.map(t => paths.get(t.peerId)?.kind))
+  const sharedKind = kinds.size === 1 ? [...kinds][0] : undefined
+
+  return (
+    <li className="batch">
+      <div className="batch__head">
+        <span className="batch__icon" aria-hidden="true">
+          <Icon name="upload" size={16} />
+        </span>
+        <div className="batch__ident">
+          <span className="batch__name" title={single?.name}>
+            {single ? single.name : `${files.length} files`}
+          </span>
+          <span className="batch__meta">
+            <span className="meta__field">{formatBytes(bytes)}</span>
+            {/* No separator before the badge: a pill is already visually
+                self-contained, and a dot beside it reads as a stray mark. */}
+            {sharedKind && <PathCost kind={sharedKind} />}
+            <span className="dot">·</span>
+            {single ? (
+              <SendState file={single} />
+            ) : transfers.length === 0 ? (
+              <span className="meta__field">Waiting for a device</span>
+            ) : !started ? (
+              <span className="meta__field">Waiting for {recipients(transfers)}</span>
+            ) : (
+              <span className="meta__field">
+                {done} of {files.length} sent
+              </span>
+            )}
+          </span>
+        </div>
+        <SendActions files={files} />
+        {!single && <DropToggle open={open} count={files.length} onToggle={() => setOpen(value => !value)} />}
+      </div>
+
+      {started && (
+        <DropRail value={bytesDone(files, sharedProgress)} complete={done === files.length} />
+      )}
+
+      {!single && open && (
+        <ul className="batch__items">
+          {files.map(file => (
+            <SharedRow key={file.id} file={file} />
+          ))}
+        </ul>
+      )}
+    </li>
+  )
+}, sameDrop)
+
+/** A drop coming in. Every file in it is from one device. */
+export const IncomingDrop = memo(function IncomingDrop({files, paths}: {files: TransferView[]; paths: PathLookup}) {
+  const [open, setOpen] = useState(false)
+  const single = files.length === 1 ? files[0]! : null
+  const bytes = files.reduce((total, file) => total + file.size, 0)
+  const done = files.filter(file => file.state === 'COMPLETED').length
+  const started = done > 0 || files.some(file => file.state !== 'WAITING_FOR_ACCEPT')
+  // Only the ones still waiting on a decision; already queued or running files
+  // must not be re-accepted.
+  const undecided = files.filter(file => file.state === 'WAITING_FOR_ACCEPT' && !isQueued(file))
+  const kind = files[0] ? paths.get(files[0].peerId)?.kind : undefined
+  const note = single ? (failureReason(single) ?? single.storageWarning) : null
+
+  return (
+    <li className={`batch ${undecided.length > 0 ? 'batch--offer' : ''}`}>
+      {/* Stacked while there is a decision to make: on a phone the summary gets
+          the full width and the buttons a row of their own. */}
+      <div className={`batch__head ${undecided.length > 0 ? 'batch__head--stacked' : ''}`}>
+        <span className="batch__icon batch__icon--in" aria-hidden="true">
+          <Icon name="download" size={16} />
+        </span>
+        <div className="batch__ident">
+          <span className="batch__name" title={single?.name}>
+            {single ? single.name : `${files.length} files`}
+          </span>
+          <span className="batch__meta">
+            <span className="meta__field">{formatBytes(bytes)}</span>
+            <span className="dot">·</span>
+            <span className="meta__field">from {files[0]?.peerName}</span>
+            {kind && <PathCost kind={kind} />}
+            {single
+              ? undecided.length === 0 && (
+                  <>
+                    <span className="dot">·</span>
+                    <ReceiveState transfer={single} />
+                  </>
+                )
+              : started && (
+                  <>
+                    <span className="dot">·</span>
+                    <span className="meta__field">
+                      {done} of {files.length} downloaded
+                    </span>
+                  </>
+                )}
+          </span>
+        </div>
+        {single ? (
+          <RowActions transfer={single} />
+        ) : (
+          undecided.length > 0 && (
+            <button
+              type="button"
+              className="button button--primary button--small"
+              onClick={() => undecided.forEach(file => session.accept(file.id))}
+            >
+              <Icon name="download" size={14} /> Download all
+            </button>
+          )
+        )}
+        {!single && <DropToggle open={open} count={files.length} onToggle={() => setOpen(value => !value)} />}
+      </div>
+
+      {note && <Warning bad={failureReason(single!) !== null}>{note}</Warning>}
+
+      {started && (
+        <DropRail
+          value={bytesDone(files, file => (file.state === 'COMPLETED' ? 1 : file.progress))}
+          complete={done === files.length}
+        />
+      )}
+
+      {!single && open && (
+        <ul className="batch__items">
+          {files.map(file => (
+            <IncomingRow key={file.id} transfer={file} />
+          ))}
+        </ul>
+      )}
+    </li>
+  )
+}, sameDrop)
