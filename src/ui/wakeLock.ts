@@ -31,7 +31,12 @@ export function useWakeLock(active: boolean): void {
       // has to be re-taken on return, not just requested once.
       if (dropped || document.visibilityState !== 'visible') return
       try {
-        sentinel = await api.request('screen')
+        const granted = await api.request('screen')
+        // The transfer may have finished while the request was in flight. The
+        // cleanup below has already run by then, so this is the only place
+        // left to let go — otherwise the screen stayed on with nothing moving.
+        if (dropped) void granted.release().catch(() => {})
+        else sentinel = granted
       } catch {
         // Denied, or the page went away mid-request. Nothing to recover.
       }

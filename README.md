@@ -30,7 +30,7 @@ on a device on the same Wi-Fi — `npm run dev` binds to `0.0.0.0` precisely so 
 
 ```bash
 npm run build        # typecheck + production bundle in dist/
-npm test             # 89 unit, session and end-to-end protocol tests
+npm test             # 138 unit, session, transport and end-to-end protocol tests
 npm run typecheck
 ```
 
@@ -47,10 +47,10 @@ keep running.
 | **Pairing** | Zero clicks — a room exists on load. QR-first, with a 12-symbol code as fallback. |
 | **Group rooms** | Up to 8 devices. Everyone can send, everyone can download, all at once. |
 | **Share first, connect later** | Files belong to the *room*. Drop them now; devices that join afterwards are offered them automatically. |
-| **Transport** | WebRTC DataChannel via [Trystero](https://github.com/dmotz/trystero). Direct local or direct internet, classified from the real ICE candidate pair and drawn as a line across the top of the screen. |
-| **Large files** | Streamed in 256 KiB chunks with backpressure on both ends. A 5 GB file never has to fit in memory on either device. |
+| **Transport** | WebRTC via [Trystero](https://github.com/dmotz/trystero), with file bytes on a data channel of their own. Direct local or direct internet, classified from the real ICE candidate pair and drawn as a line across the top of the screen. |
+| **Large files** | Streamed in chunks of up to 256 KiB — each sized to travel as one message — with backpressure on both ends. A 5 GB file never has to fit in memory on either device. |
 | **Integrity** | Every chunk is SHA-256'd; the file hash is the hash of those digests. A file that fails verification is never handed to the user. |
-| **Resume** | The receiver checkpoints durable progress. After a connection drop the sender restarts from that checkpoint, not from zero. |
+| **Resume** | After a connection drop the receiver says exactly which chunks it still lacks, and only those are sent again — not everything after the first gap, and never from zero. |
 | **Text and links** | Send a URL or a note to the room without wrapping it in a file. Only a message that is entirely one http(s) URL becomes clickable. |
 | **Privacy** | No account, no upload, no file storage, no telemetry. The pairing code never reaches a server. |
 | **Installable** | A PWA. Once installed on Chromium — Android, ChromeOS, Windows — it registers as a share target, so *Share → flit* opens the app with the file already queued. Not macOS or iOS: neither wires a web app into the system share sheet. |
@@ -112,7 +112,7 @@ The UI never sees SDP, ICE candidates, DataChannels, or Trystero. Everything bel
                                     │
                           Transport (interface)
                                     │
-                           TrysteroTransport
+                  TrysteroTransport ── BulkChannel (file data)
                                     │
                             WebRTC · STUN
 ```
@@ -121,7 +121,7 @@ The UI never sees SDP, ICE candidates, DataChannels, or Trystero. Everything bel
 src/lib/
 ├── core/        events · ids · errors · config (every tunable limit)
 ├── protocol/    wire messages · strict validation · binary framing
-├── transport/   Transport interface · Trystero adapter · ICE path classifier
+├── transport/   Transport interface · Trystero adapter · bulk data channel · ICE path classifier
 ├── integrity/   chunk-tree hashing
 ├── storage/     three receiver tiers + capacity checks
 ├── transfer/    send/receive halves · per-device queues · flow control · states
@@ -164,10 +164,12 @@ Every shared file is offered as soon as it is dropped, not one at a time. An off
 holding the rest back until the first finished meant a device could see only the first file with no
 sign the others existed.
 
-Downloads themselves still run one at a time per device. Accepting several marks the rest
-**Queued**: five downloads sharing one connection all crawl and none of them finishes, whereas
-serially the first file is usable while the rest arrive, and an interruption costs one part-file
-instead of five.
+A large download gets the connection to itself. Accepting several marks the rest **Queued**: five
+large downloads sharing one connection all crawl and none of them finishes, whereas serially the
+first file is usable while the rest arrive, and an interruption costs one part-file instead of five.
+Small files (8 MB and under) are the exception and run up to four at a time — for a photo, the round
+trips around the bytes cost more than the bytes, so one at a time left the link idle most of the
+time. Order is kept either way: a small file never jumps a large one queued ahead of it.
 
 Files dropped in one action share a `batchId` and are shown as one group on **both** devices —
 "5 files · 15 MB" with **Download all** on the receiving side, folded until you expand it, so a big
@@ -185,14 +187,35 @@ A queued file offers **Not now** rather than Cancel. Cancelling is terminal, and
 not started — leaving the queue puts its Download button back, so you can accept everything, change
 your mind, and take only the two you actually wanted.
 
+### File data has its own channel
+
+Trystero finds devices and keeps the connection up; it does not carry the files. Each connection
+gets a second data channel, created on both ends with a fixed id (`negotiated`, so it needs no
+signaling), and every chunk travels on it as exactly one message — chunks are sized to the
+max-message-size the two browsers negotiated, 255 KiB between Chromium and Safari.
+
+Trystero's own channel splits every message into 16 KiB pieces, which cost two full copies per chunk
+and a reassembly on the far side, and queued control messages — Pause, Cancel, a new offer — behind
+megabytes of file data. Worse, its send gives up silently: a channel that does not drain within ten
+seconds, or closes mid-message, *resolves* the send with the message half gone. Chunks and
+completions could vanish while both ends believed them delivered. On the dedicated channel a send
+either reaches the channel or throws, and the one control message whose order relative to the chunks
+matters — `TRANSFER_COMPLETE` — travels on it behind them.
+
+An older build has no such channel, so each end says hello on it first and only uses it once the other
+answers; with a peer that never does, file data falls back to Trystero's channel. Mixed versions in
+one room keep working in both directions.
+
 ### Receiver storage tiers
 
 Chosen automatically per transfer, best first:
 
 1. **User-chosen location** (File System Access) — streams straight to disk, one write, no quota.
    Used for files ≥ 256 MB, or always if you enable it in settings.
-2. **OPFS** — written off the main thread via a worker with sync access handles, verified, then
-   handed to your downloads. Bounded memory at any file size.
+2. **OPFS** — written off the main thread via one shared worker with sync access handles, verified,
+   then handed to your downloads. Bounded memory at any file size. Each page keeps its files in a
+   folder of its own, held by a Web Lock while the page lives, so a second tab or a reload never
+   deletes another page's files; folders nobody holds are cleared at startup.
 3. **Memory** — last resort for browsers with neither. Hard-capped at 512 MB; larger transfers are
    declined rather than crashing the tab.
 
@@ -232,12 +255,20 @@ The honest consequence:
 
 | Situation | Result |
 |---|---|
-| Same Wi-Fi | Essentially always works, at full local speed |
+| Same Wi-Fi or hotspot, with internet | Essentially always works, at full local speed |
+| Same Wi-Fi or hotspot, **no internet at all** | **Cannot pair** — see below |
 | Different networks, typical home/mobile NAT | Usually works |
 | Symmetric NAT, strict corporate firewall, some captive Wi-Fi | **Cannot connect** — the app says so and suggests putting both devices on the same network |
 
 A relay would paper over that last row by routing your files through someone's server. This project
 would rather tell you the truth and stay free.
+
+The no-internet row is about *introductions*, not bytes. Two devices on one offline hotspot can
+reach each other directly — and once connected, files never leave the network — but a browser cannot
+listen for another device, so something has to carry the first offer and answer between them, and
+here that is a signaling relay. Without internet access nothing can. The only serverless way
+around it in a browser is to carry that exchange by hand, as QR codes each device scans from the
+other; that is not built.
 
 ## Configuration
 
@@ -258,8 +289,22 @@ app, not per room. Four of the five it picked for this app id were dead (503, 53
 refused connection), leaving pairing to ride on a single relay and fail whenever that one relay was
 busy.
 
-Each pinned relay was checked from a browser. Relay operators come and go, so if pairing starts
-failing intermittently, re-check the list before suspecting anything else.
+Each pinned relay is checked with the round trip signaling depends on, not just a handshake: one
+socket subscribes to a topic, a second publishes a signed ephemeral event to it — the kind Trystero
+sends — and the first has to receive it. Plenty of relays answer a handshake and then refuse exactly
+that (ephemeral kinds blocked, proof of work demanded).
+
+That check runs once a week on GitHub: [`.github/workflows/signaling-health.yml`](.github/workflows/signaling-health.yml)
+round-trips every pinned relay and fails — which notifies you — when one is down for most of a
+minute, naming it. It only reports; replacing a dead relay is an edit to `config.ts` and a deploy.
+Run it by hand any time:
+
+```bash
+npm run check:signaling
+```
+
+GitHub pauses scheduled workflows after 60 days without repository activity; if the job stops
+appearing, re-enable it from the Actions tab.
 
 ### Deploying
 
@@ -426,7 +471,16 @@ simulated link — control messages are JSON round-tripped through the validator
 encoded and decoded as binary frames, so it exercises the actual protocol. It covers a clean
 multi-chunk transfer, an empty file, a mid-transfer disconnect that must resume rather than
 restart, duplicate chunks, a corrupted chunk that must fail verification and withhold the file,
-a chunk that contradicts the offer, rejection, a resume with a mismatched file, and cancellation.
+a chunk that contradicts the offer, rejection, a resume with a mismatched file, and cancellation —
+and, under **recovery**, every way a message or a connection can go missing: a blip before anyone
+accepts, a lost go-ahead, a lost completion, a lost decision, a single lost chunk, a file that
+vanishes mid-send, a completion delivered twice, and a save slower than the stall window.
+
+`tests/manager.test.ts` drives `TransferManager` against recording links: chunks sized to the
+link's message limit, small downloads side by side, a large one alone, order kept between them, and
+a repeated offer answered rather than listed twice. `tests/bulk.test.ts` covers the file-data
+channel against a fake channel pair: the hello handshake and the fallback, backpressure, and a
+closed channel refusing a send rather than pretending it went.
 
 Real bugs caught during development, now regression-covered: illegal characters being stripped
 before the path-separator split (which defeated basename extraction); a stranded transfer when a
@@ -435,6 +489,18 @@ resume rewound the send pointer while the pump was draining; same-Wi-Fi connecti
 globally-routable IPv6; the two ends of one link disagreeing about that classification because a
 peer-reflexive candidate was read as NAT traversal; and the badge later flipping to "Internet" on
 its own when ICE renominated the candidate pair.
+
+A later round, each found by reproducing it first: an offer that nobody had accepted yet failing two
+minutes after any network blip, and an empty file "completing" on one without consent; Trystero
+resolving a send whose message it had half dropped; the control-message rate limit silently
+swallowing every offer past the 400th; "Reconnect now" wiping everything this device had shared; a
+deleted source file reported as a lost connection after a two-minute wait; a slow multi-gigabyte
+save failed as a stall after the sender had already been told it succeeded; one overlapping
+completion finalizing — and downloading — a file twice; one lost chunk resending the rest of the
+file; a stale failure from a dead connection knocking a resumed transfer back into reconnecting; an
+unaccepted offer holding the screen awake for the room's whole lifetime; opening a second tab
+deleting the first tab's received files; and two devices on one IPv6 Wi-Fi labelled "Internet"
+because ICE picked the reflexive form of an address that has no NAT in front of it.
 
 ---
 

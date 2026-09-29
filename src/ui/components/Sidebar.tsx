@@ -222,7 +222,8 @@ function Settings({state, onDismiss}: {state: SessionSnapshot; onDismiss: () => 
         <span>
           <strong>Local network only</strong>
           <span>
-            Refuses anything but a direct local connection. Applies next time you connect.
+            Refuses anything but a direct local connection. Devices reconnect straight away;
+            nothing you shared is lost.
           </span>
         </span>
       </label>

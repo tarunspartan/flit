@@ -5,14 +5,44 @@
 
 export const APP_ID = 'flit-v1'
 
-/** Application-level chunk size. Trystero splits these into 16 KiB wire frames. */
+/**
+ * Largest application-level chunk. The size actually used for a transfer can be
+ * smaller: each chunk travels as one data channel message, so it is capped by
+ * the SCTP max-message-size the two browsers negotiated (see chunkSizeFor).
+ */
 export const CHUNK_SIZE = 256 * 1024
 
 /**
- * How many chunk sends may be outstanding at once. Bounds sender memory to
- * MAX_IN_FLIGHT_CHUNKS * CHUNK_SIZE while keeping the DataChannel pipeline full.
+ * How many chunks may be being read, hashed and handed to the channel at once.
+ * Bounds sender memory to MAX_IN_FLIGHT_CHUNKS * CHUNK_SIZE on top of the
+ * channel's own buffer, whatever the file size.
  */
 export const MAX_IN_FLIGHT_CHUNKS = 8
+
+/**
+ * The file-data channel's send buffer.
+ *
+ * A send waits while more than HIGH is queued and resumes once the browser has
+ * drained it to LOW. The gap keeps the SCTP pipe full between wake-ups without
+ * holding much more than a round trip's worth of data: control messages travel
+ * on a different channel, so a deep buffer here no longer delays a Pause.
+ */
+export const BULK_HIGH_WATER = 4 * 1024 * 1024
+export const BULK_LOW_WATER = 1024 * 1024
+
+/**
+ * Files at or below this size may download a few at a time. For a small file
+ * the round trips around it — accept, verify, save — cost more than its bytes,
+ * so running them one by one leaves the link idle most of the time.
+ */
+export const SMALL_FILE_BYTES = 8 * 1024 * 1024
+export const MAX_PARALLEL_SMALL_DOWNLOADS = 4
+
+/**
+ * How fast offers go out. A drop of hundreds of files is metadata only, but a
+ * peer's control channel is rate limited, so offers are paced well inside it.
+ */
+export const OFFERS_PER_SECOND = 100
 
 /** Receiver acknowledges a checkpoint at most this often (§73.4). */
 export const CHECKPOINT_INTERVAL_BYTES = 8 * 1024 * 1024
@@ -39,6 +69,12 @@ export const LIMITS = {
   /** Control messages accepted from a peer per second before we start dropping. */
   maxControlMessagesPerSecond: 200,
   /**
+   * How many may arrive at once. Must cover a whole session's worth of offers:
+   * a device joining a room is offered everything shared so far in one go, and
+   * an older build sends those unpaced.
+   */
+  maxControlMessageBurst: 600,
+  /**
    * How long a room's code keeps working. Devices are expected to join long
    * after the files were dropped, so this is a session lifetime rather than a
    * short pairing window.
@@ -55,10 +91,16 @@ export const TIMEOUTS = {
   transferStallMs: 30_000,
   /** How long we keep trying to re-pair after the peer drops before giving up. */
   reconnectWindowMs: 2 * 60 * 1000,
-  /** Time to wait for a peer to answer a resume negotiation. */
-  resumeNegotiationMs: 15_000,
-  /** How long a receiver waits for the sender's first chunk after accepting. */
-  transferStartMs: 20_000
+  /**
+   * How long a message that expects an answer waits before it is sent again.
+   *
+   * A message can be lost without either end seeing an error — the channel it
+   * was queued on closed, or it went out while the peer was between
+   * connections. Every message that is resent is idempotent at the far end, so
+   * asking again is always safe, and several retries fit inside one stall
+   * window before the transfer is given up on.
+   */
+  retryMs: 5_000
 } as const
 
 /** Memory-mode receiving is capped: above this we require a real storage tier. */
@@ -110,16 +152,25 @@ export const STUN_URLS = [
  * does" behaviour. Rejoining picked the same five, so retrying only helped by
  * chance.
  *
- * These were each verified to complete a WebSocket handshake. Relay operators
- * come and go, so this list is worth re-checking if pairing gets flaky again.
+ * A handshake is not enough to earn a place here. Each relay below was checked
+ * (2026-09-25) with the round trip signaling actually depends on: one socket
+ * subscribes to a topic, a second publishes a signed ephemeral event to it — the
+ * kind Trystero uses — and the first must receive it. Several relays that
+ * answer a handshake refuse exactly that: ephemeral kinds blocked, proof of
+ * work required, unregistered kinds rejected. relay.mostr.pub and
+ * relay.froth.zone had since gone dark and were replaced.
+ *
+ * Every device on a build uses this same list, which is what guarantees two
+ * devices share a relay. Relay operators come and go: `npm run check:signaling`
+ * runs that check, and .github/workflows/signaling-health.yml runs it weekly.
  */
-export const RELAY_URLS = [
+export const RELAY_URLS: readonly string[] = [
+  'wss://purplerelay.com',
   'wss://nostr-01.yakihonne.com',
   'wss://relay.notoshi.win',
   'wss://x.kojira.io',
-  'wss://purplerelay.com',
   'wss://nos.lol',
-  'wss://relay.mostr.pub',
   'wss://nostr.data.haus',
-  'wss://relay.froth.zone'
+  'wss://basspistol.org',
+  'wss://bucket.coracle.social'
 ]

@@ -1,13 +1,14 @@
-import {
-  CHECKPOINT_INTERVAL_BYTES,
-  CHECKPOINT_INTERVAL_MS,
-  LIMITS,
-  TIMEOUTS
-} from '../core/config.ts'
+import {CHECKPOINT_INTERVAL_BYTES, CHECKPOINT_INTERVAL_MS, LIMITS, TIMEOUTS} from '../core/config.ts'
 import type {Bytes} from '../core/bytes.ts'
-import {AppError, friendly, toAppError} from '../core/errors.ts'
-import {ChunkTreeHasher} from '../integrity/hash.ts'
-import {message, type ControlMessage, type TransferOffer} from '../protocol/messages.ts'
+import {AppError, codeFromPeer, friendly, toAppError} from '../core/errors.ts'
+import {ChunkTreeHasher, sha256} from '../integrity/hash.ts'
+import {
+  MAX_MISSING_RANGES,
+  message,
+  type ControlMessage,
+  type TransferOffer,
+  type TransferReject
+} from '../protocol/messages.ts'
 import {
   canChooseLocation,
   createReceiverStore,
@@ -21,6 +22,7 @@ import type {StoreKind} from '../storage/types.ts'
 import {sanitizeFilename, sanitizeRelativePath} from '../utils/filename.ts'
 import {formatBytes} from '../utils/format.ts'
 import {SpeedMeter} from '../utils/speed.ts'
+import {keepIfSame} from '../utils/stable.ts'
 import type {PeerLink} from './PeerLink.ts'
 import {canTransition, isTerminal, type TransferState, type TransferView} from './states.ts'
 
@@ -45,6 +47,10 @@ export interface ReceiveTransferOptions {
  * Chunks are hashed and streamed to a storage tier as they arrive; nothing is
  * shown to the user as a file until every chunk is present, the content hash
  * matches, and finalization succeeds (§78.1).
+ *
+ * Every chunk that has been written is kept. Whenever more are needed — after a
+ * drop, after a pause, when the sender has gone quiet — the receiver flushes and
+ * says exactly which chunks it still lacks, and the sender sends those.
  */
 export class ReceiveTransfer {
   readonly id: string
@@ -60,7 +66,7 @@ export class ReceiveTransfer {
   readonly totalChunks: number
 
   state: TransferState = 'WAITING_FOR_ACCEPT'
-  /** Set while this download is accepted but waiting for the one ahead of it. */
+  /** Set while this download is accepted but waiting for a free slot. */
   queuePosition: number | null = null
   /** Which drop this file arrived in, when the sender said. */
   readonly batchId: string | null
@@ -87,23 +93,36 @@ export class ReceiveTransfer {
   #prefs: StoragePreferences
   #hasher: ChunkTreeHasher
   #speed = new SpeedMeter()
+  #view: TransferView | null = null
   #store: ReceiverStore | null = null
   #blob: Blob | null = null
   #savedToDisk = false
   /** Kept so a re-announced completion can be answered without rehashing. */
   #contentHash: string | null = null
+  /** What we answered an offer with, so a repeated offer gets the same answer. */
+  #rejectReason: TransferReject['reason'] = 'declined'
 
   #identity: {size: number; lastModified: number; chunkSize: number}
   #receivedBytes = 0
-  /** Contiguous chunks written (may not yet be durable). */
+  /** Contiguous chunks written from index 0 — what a checkpoint reports. */
   #contiguous = 0
-  /** Contiguous chunks confirmed flushed — the only safe resume point. */
-  #durable = 0
+  /** Chunks accepted into the write queue and not yet recorded as present. */
+  #pending = new Set<number>()
   #writeQueue: Promise<void> = Promise.resolve()
   #pendingBytes = 0
   #flowPaused = false
   #lastCheckpointAt = 0
   #bytesSinceCheckpoint = 0
+  /** When a chunk last arrived or we last asked for more, for the retry clock. */
+  #quietSince = 0
+  /** The verification in progress, so an overlapping completion joins it. */
+  #verifying: Promise<void> | null = null
+  /**
+   * True while the work in hand is ours — draining writes, hashing, saving.
+   * The stall watchdog asks whether the *peer* has gone quiet; a multi-gigabyte
+   * save that takes a minute is not the peer's silence.
+   */
+  #busyLocally = false
 
   constructor(options: ReceiveTransferOptions) {
     const {offer} = options
@@ -130,6 +149,21 @@ export class ReceiveTransfer {
     this.#hasher = new ChunkTreeHasher(offer.size, offer.chunkSize, offer.totalChunks)
   }
 
+  /** Whether accepting this opens a save dialog before anything is downloaded. */
+  get asksWhereToSave(): boolean {
+    return usesChosenLocation(this.size, this.#prefs)
+  }
+
+  /**
+   * Follows the "Always choose where to save" setting. Without this an offer
+   * kept the setting from when it arrived, so turning it on changed nothing
+   * for the files already waiting — the ones you turned it on for.
+   */
+  setPreferences(prefs: StoragePreferences): void {
+    this.#prefs = prefs
+    if (this.state === 'WAITING_FOR_ACCEPT') void this.prepare()
+  }
+
   /** Storage advice shown next to Accept/Reject (§66.9). */
   async prepare(): Promise<void> {
     // Only judged against the origin quota when the bytes will actually land
@@ -152,8 +186,9 @@ export class ReceiveTransfer {
       return
     }
 
+    let store: ReceiverStore
     try {
-      this.#store = await createReceiverStore(
+      store = await createReceiverStore(
         {filename: this.name, size: this.size, mimeType: this.mimeType, allowPicker: true},
         this.#prefs
       )
@@ -167,11 +202,24 @@ export class ReceiveTransfer {
         this.#onChange()
         return
       }
-      await this.#reject(appError.code === 'storage-full' ? 'no-storage' : 'no-storage', appError)
+      await this.#reject('no-storage', appError)
       return
     }
 
+    // The sender may have cancelled while the save dialog was open.
+    if (this.state !== 'WAITING_FOR_ACCEPT') {
+      await store.abort()
+      return
+    }
+
+    this.#store = store
     this.startedAt = Date.now()
+    this.#quietSince = Date.now()
+    // The stall clock starts now, not when the offer arrived. Left at the
+    // offer's time, a file accepted more than a stall window later failed as
+    // "nothing arrived" within seconds — before its sender, still busy with
+    // the file ahead of it in the same batch, had sent it a single chunk.
+    this.lastActivity = Date.now()
     this.#transition('TRANSFERRING')
     await this.#send(message({t: 'TRANSFER_ACCEPT', transferId: this.id, fromChunk: 0}))
   }
@@ -197,8 +245,7 @@ export class ReceiveTransfer {
 
   resume(): void {
     if (this.state !== 'PAUSED') return
-    this.#transition('TRANSFERRING')
-    void this.#sendResumePoint()
+    void this.#requestMissing()
   }
 
   /** Re-offers the completed file when the browser blocked the auto-download. */
@@ -209,6 +256,18 @@ export class ReceiveTransfer {
   /** The verified file, when it is not already written to a chosen location. */
   get received(): Blob | null {
     return this.#blob
+  }
+
+  /**
+   * Lets go of everything this transfer holds on disk or in memory. Called once
+   * it leaves the list; until then the finished file stays for "Save again".
+   */
+  dispose(): void {
+    this.cancel(false)
+    this.#blob = null
+    const store = this.#store
+    this.#store = null
+    void store?.release()
   }
 
   // ------------------------------------------------------------------ inbound
@@ -236,7 +295,7 @@ export class ReceiveTransfer {
         break
 
       case 'TRANSFER_ERROR':
-        this.#fail(new AppError('protocol-violation', msg.detail ?? msg.code))
+        this.#fail(new AppError(codeFromPeer(msg.code), msg.detail))
         void this.#store?.abort()
         break
 
@@ -245,8 +304,42 @@ export class ReceiveTransfer {
     }
   }
 
+  /**
+   * The sender offered this file again, which means it never heard our answer —
+   * the connection took it. Answer again, whatever the answer was.
+   */
+  onOfferRepeated(): void {
+    switch (this.state) {
+      case 'REJECTED':
+        void this.#send(message({t: 'TRANSFER_REJECT', transferId: this.id, reason: this.#rejectReason}))
+        break
+      case 'CANCELLED':
+        void this.#send(message({t: 'TRANSFER_CANCEL', transferId: this.id, reason: 'user'}))
+        break
+      case 'FAILED':
+        void this.#send(
+          message({t: 'TRANSFER_ERROR', transferId: this.id, code: this.error?.code ?? 'protocol-violation'})
+        )
+        break
+      case 'COMPLETED':
+        void this.#sendVerdict(true)
+        break
+      case 'TRANSFERRING':
+      case 'RECONNECTING':
+        // We said yes and the sender never heard it.
+        void this.#requestMissing()
+        break
+      default:
+        // Still undecided, queued, paused or verifying: nothing to repeat.
+        break
+    }
+  }
+
   handleChunk(index: number, payload: Bytes): void {
-    if (this.state !== 'TRANSFERRING' && this.state !== 'PAUSED') return
+    // Accepted in any live state once consent has opened a store: a chunk
+    // landing during RECONNECTING or VERIFYING is a real chunk, and turning it
+    // away only means asking for it again.
+    if (!this.#store || isTerminal(this.state)) return
 
     // Every chunk is checked against what the offer promised (§10).
     if (index < 0 || index >= this.totalChunks) {
@@ -259,33 +352,44 @@ export class ReceiveTransfer {
       return
     }
 
-    // Duplicates are expected after a resume and must not corrupt anything.
-    if (this.#hasher.has(index)) return
-
-    this.lastActivity = Date.now()
     // A chunk landing is the only unambiguous evidence the link is working
     // again — asking to resume is not, because the request itself can fail into
-    // a dead link. So this, and not `#sendResumePoint`, is what ends the
-    // reconnect window.
+    // a dead link. So this is what ends the reconnect window.
+    this.lastActivity = Date.now()
+    this.#quietSince = this.lastActivity
     this.#lostAt = null
-    this.#enqueueWrite(index, payload)
+
+    // Duplicates are expected after a resume and must not corrupt anything.
+    if (this.#hasher.has(index) || this.#pending.has(index)) return
+    this.#enqueueWrite(this.#store, index, payload)
   }
 
-  #enqueueWrite(index: number, payload: Bytes): void {
-    this.#pendingBytes += payload.byteLength
+  #enqueueWrite(store: ReceiverStore, index: number, payload: Bytes): void {
+    // Read now: a store may take ownership of the buffer, after which the view
+    // reports a length of zero.
+    const length = payload.byteLength
+    this.#pending.add(index)
+    this.#pendingBytes += length
     if (this.#pendingBytes >= WRITE_QUEUE_HIGH_WATER) this.#setFlow(true)
+
+    // Started here rather than after the write: Web Crypto copies its input as
+    // it is called, so hashing overlaps the disk write and leaves the store
+    // free to take the buffer without a copy of its own.
+    const digest = sha256(payload)
 
     this.#writeQueue = this.#writeQueue
       .then(async () => {
-        const store = this.#store
-        if (!store || isTerminal(this.state)) return
+        if (isTerminal(this.state)) return
         await store.write(index * this.chunkSize, payload)
-        await this.#hasher.add(index, payload)
+        this.#hasher.setDigest(index, await digest)
 
-        this.#receivedBytes += payload.byteLength
-        this.#speed.record(payload.byteLength)
-        this.#bytesSinceCheckpoint += payload.byteLength
+        this.#receivedBytes += length
+        this.#speed.record(length)
+        this.#bytesSinceCheckpoint += length
         this.#contiguous = this.#hasher.contiguousCount(this.#contiguous)
+        // Our own progress counts as life: while the disk catches up the sender
+        // is rightly holding back, and that is not a stall.
+        this.lastActivity = Date.now()
         this.#onChange()
         await this.#maybeCheckpoint()
       })
@@ -293,12 +397,14 @@ export class ReceiveTransfer {
         this.#onWriteFailure(err)
       })
       .finally(() => {
-        this.#pendingBytes -= payload.byteLength
+        this.#pending.delete(index)
+        this.#pendingBytes -= length
         if (this.#pendingBytes <= WRITE_QUEUE_LOW_WATER) this.#setFlow(false)
       })
   }
 
   #onWriteFailure(err: unknown): void {
+    if (isTerminal(this.state)) return
     const appError = toAppError(err, 'finalize-failed')
     this.#fail(appError)
     void this.#store?.abort()
@@ -320,7 +426,7 @@ export class ReceiveTransfer {
 
   /**
    * A checkpoint claims durability, so it is only sent after a real flush
-   * (§73.4). It is also the point a resume would restart from.
+   * (§73.4).
    */
   async #maybeCheckpoint(force = false): Promise<void> {
     const now = Date.now()
@@ -332,14 +438,14 @@ export class ReceiveTransfer {
 
     this.#lastCheckpointAt = now
     this.#bytesSinceCheckpoint = 0
+    const chunks = this.#contiguous
     await this.#store.flush()
-    this.#durable = this.#contiguous
     await this.#send(
       message({
         t: 'TRANSFER_CHECKPOINT',
         transferId: this.id,
-        chunks: this.#durable,
-        bytes: Math.min(this.size, this.#durable * this.chunkSize)
+        chunks,
+        bytes: Math.min(this.size, chunks * this.chunkSize)
       })
     )
   }
@@ -347,6 +453,11 @@ export class ReceiveTransfer {
   // ------------------------------------------------------------------- resume
 
   async #onResumeRequest(identity: {size: number; lastModified: number; chunkSize: number}): Promise<void> {
+    if (this.state === 'COMPLETED') {
+      // The sender lost our verdict along with the connection.
+      await this.#sendVerdict(true)
+      return
+    }
     if (isTerminal(this.state)) return
 
     // Never append bytes from a file that is no longer the one we started (§74.3).
@@ -357,64 +468,69 @@ export class ReceiveTransfer {
     ) {
       this.#fail(new AppError('resume-mismatch'))
       void this.#store?.abort()
-      await this.#send(
-        message({t: 'TRANSFER_ERROR', transferId: this.id, code: 'resume-mismatch'})
-      )
+      await this.#send(message({t: 'TRANSFER_ERROR', transferId: this.id, code: 'resume-mismatch'}))
       return
     }
 
-    if (!this.#store) {
-      // Interrupted before consent: ask the user again rather than auto-accepting.
-      this.#transition('WAITING_FOR_ACCEPT')
-      return
-    }
-
-    await this.#sendResumePoint()
+    // No store means consent never happened: the offer still stands, and
+    // nothing is resumed without the user saying yes.
+    if (!this.#store) return
+    await this.#requestMissing()
   }
 
-  async #sendResumePoint(): Promise<void> {
-    // Anything above the durable checkpoint may not have reached disk, so it is
-    // dropped and re-requested rather than assumed good.
-    await this.#store?.flush().catch(() => {})
-    this.#hasher.truncateTo(this.#durable)
-    this.#contiguous = this.#durable
-    this.#receivedBytes = Math.min(this.size, this.#durable * this.chunkSize)
+  /**
+   * Asks for exactly the chunks still missing — the whole negotiation, whether
+   * starting over after a drop, after a pause, or after gaps at completion.
+   *
+   * Everything already written is kept: it is flushed first, which makes it as
+   * safe to resume from as a checkpoint. Only chunks neither present nor
+   * already queued for writing are requested.
+   */
+  async #requestMissing(): Promise<void> {
+    const store = this.#store
+    if (!store || isTerminal(this.state)) return
+    this.#quietSince = Date.now()
+    await store.flush().catch(() => {})
+    if (isTerminal(this.state)) return
+
+    const missing = this.#hasher.missingRanges(MAX_MISSING_RANGES, index => this.#pending.has(index))
     this.#speed.reset()
-    this.#flowPaused = false
-    if (this.state !== 'TRANSFERRING') this.#transition('TRANSFERRING')
+    this.#transition('TRANSFERRING')
     this.startedAt ??= Date.now()
+    // An ACCEPT lifts the sender's flow pause, so ours is re-raised right after
+    // it if the disk is still behind.
+    this.#flowPaused = false
     await this.#send(
-      message({t: 'TRANSFER_ACCEPT', transferId: this.id, fromChunk: this.#durable})
+      message({
+        t: 'TRANSFER_ACCEPT',
+        transferId: this.id,
+        fromChunk: missing[0]?.[0] ?? this.totalChunks,
+        missing
+      })
     )
+    if (this.#pendingBytes >= WRITE_QUEUE_HIGH_WATER) this.#setFlow(true)
   }
 
   onPeerLost(): void {
-    if (isTerminal(this.state) || this.state === 'WAITING_FOR_ACCEPT') return
+    if (isTerminal(this.state) || this.state === 'WAITING_FOR_ACCEPT' || this.state === 'PAUSED') return
     this.#speed.reset()
     this.#lostAt ??= Date.now()
     this.#transition('RECONNECTING')
   }
 
   /**
-   * Either end may now restart a transfer.
+   * Either end may restart a transfer.
    *
    * The sender still drives resume when *it* saw the drop. But a drop is
    * routinely noticed by only one side — the other's connection can sit in the
    * roster looking healthy — and when that side was the sender, nobody ever
    * sent `TRANSFER_RESUME` and the receiver waited for a message that could not
    * arrive. So the end that noticed says so, whichever end that is.
-   *
-   * Sending our checkpoint is the whole negotiation: `TRANSFER_ACCEPT{fromChunk}`
-   * is what the sender acts on either way. If both ends noticed, the sender
-   * simply gets it twice, and `#onAccept` treats the second identically to the
-   * first — rewind to the same chunk and pump.
    */
   onPeerRestored(): void {
     if (this.state !== 'RECONNECTING') return
     this.lastActivity = Date.now()
-    // No store means consent never happened, so there is nothing to resume —
-    // `#onResumeRequest` puts that case back in front of the user instead.
-    if (this.#store) void this.#sendResumePoint()
+    void this.#requestMissing()
   }
 
   /**
@@ -433,7 +549,30 @@ export class ReceiveTransfer {
     this.lastActivity = Math.min(Date.now(), this.lastActivity + ms)
   }
 
+  /** Periodic upkeep: ask again if the sender has gone quiet, then check for a stall. */
+  tick(now = Date.now()): void {
+    this.#retry(now)
+    this.checkStall(now)
+  }
+
+  /**
+   * Nudges a sender that has gone quiet.
+   *
+   * Our ACCEPT, or the FLOW that lifted a pause, may have been lost; the
+   * sender may have lost chunks we never saw. Asking for what is missing
+   * covers all three, and is harmless if the sender was merely slow.
+   */
+  #retry(now: number): void {
+    if (!this.#store || this.#busyLocally || !this.#link.isConnected()) return
+    if (this.state !== 'TRANSFERRING' && this.state !== 'RECONNECTING') return
+    // A silence we asked for with our own flow pause is not a lost message.
+    if (this.state === 'TRANSFERRING' && this.#flowPaused) return
+    if (now - this.#quietSince < TIMEOUTS.retryMs) return
+    void this.#requestMissing()
+  }
+
   checkStall(now = Date.now()): void {
+    if (this.#busyLocally) return
     if (!['TRANSFERRING', 'RECONNECTING', 'VERIFYING'].includes(this.state)) return
     const reconnecting = this.state === 'RECONNECTING'
     const limit = reconnecting ? TIMEOUTS.reconnectWindowMs : TIMEOUTS.transferStallMs
@@ -441,8 +580,12 @@ export class ReceiveTransfer {
     // of life, so a flapping peer cannot hold the transfer open forever.
     const since = reconnecting ? (this.#lostAt ?? this.lastActivity) : this.lastActivity
     if (now - since > limit) {
-      this.#fail(new AppError(reconnecting ? 'connection-lost' : 'transfer-stalled'))
+      const error = new AppError(reconnecting ? 'connection-lost' : 'transfer-stalled')
+      this.#fail(error)
       void this.#store?.abort()
+      // Say so, or the sender — which may have sent every byte — sits at 100%
+      // waiting on a receiver that has already given up.
+      void this.#send(message({t: 'TRANSFER_ERROR', transferId: this.id, code: error.code}))
     }
   }
 
@@ -452,56 +595,70 @@ export class ReceiveTransfer {
     // Duplicate completions are expected: if the verdict was lost with the
     // connection, the sender re-announces and we answer again (§73.3).
     if (this.state === 'COMPLETED' && this.#contentHash) {
-      await this.#send(
-        message({
-          t: 'TRANSFER_VERIFY',
-          transferId: this.id,
-          ok: this.#contentHash === expectedHash,
-          contentHash: this.#contentHash
-        })
-      )
+      await this.#sendVerdict(this.#contentHash === expectedHash)
       return
     }
-    if (isTerminal(this.state)) return
-    this.#transition('VERIFYING')
+    // A completion for a file nobody accepted is ignored — there is nothing to
+    // verify, and no consent to finish without.
+    if (isTerminal(this.state) || !this.#store) return
+    // One verification at a time. A second completion arriving while the first
+    // is still draining used to run the whole thing again — and finalize, and
+    // download, the file twice.
+    this.#verifying ??= this.#verify(expectedHash).finally(() => {
+      this.#verifying = null
+    })
+    await this.#verifying
+  }
 
-    // Writes are async; let the queue drain before judging completeness.
-    await this.#writeQueue.catch(() => {})
-    if (isTerminal(this.state)) return
-
-    if (!this.#hasher.complete) {
-      // Gaps mean chunks were lost with the connection: ask for the rest
-      // instead of failing the whole file.
-      this.#transition('TRANSFERRING')
-      await this.#maybeCheckpoint(true)
-      await this.#sendResumePoint()
-      return
-    }
-
-    let actualHash: string
+  async #verify(expectedHash: string): Promise<void> {
+    this.#busyLocally = true
     try {
-      actualHash = await this.#hasher.root()
+      this.#transition('VERIFYING')
+
+      // Writes are async; let the queue drain before judging completeness.
+      // Looped, because a chunk that lands meanwhile extends the queue.
+      let queue: Promise<void>
+      do {
+        queue = this.#writeQueue
+        await queue
+      } while (queue !== this.#writeQueue)
+      if (isTerminal(this.state)) return
+
+      if (!this.#hasher.complete) {
+        // Gaps mean chunks were lost on the way: ask for exactly those
+        // instead of failing the whole file.
+        this.#busyLocally = false
+        await this.#requestMissing()
+        return
+      }
+
+      const actualHash = await this.#hasher.root()
+      this.#contentHash = actualHash
+      const ok = actualHash === expectedHash
+      await this.#sendVerdict(ok)
+
+      if (!ok) {
+        // A file that failed verification is never handed to the user.
+        this.#fail(new AppError('integrity-failed'))
+        void this.#store?.abort()
+        return
+      }
+
+      this.verified = true
+      await this.#finalize()
     } catch (err) {
       this.#fail(toAppError(err, 'integrity-failed'))
       void this.#store?.abort()
-      return
+    } finally {
+      this.#busyLocally = false
     }
+  }
 
-    this.#contentHash = actualHash
-    const ok = actualHash === expectedHash
+  async #sendVerdict(ok: boolean): Promise<void> {
+    if (!this.#contentHash) return
     await this.#send(
-      message({t: 'TRANSFER_VERIFY', transferId: this.id, ok, contentHash: actualHash})
+      message({t: 'TRANSFER_VERIFY', transferId: this.id, ok, contentHash: this.#contentHash})
     )
-
-    if (!ok) {
-      // A file that failed verification is never handed to the user.
-      this.#fail(new AppError('integrity-failed'))
-      void this.#store?.abort()
-      return
-    }
-
-    this.verified = true
-    await this.#finalize()
   }
 
   async #finalize(): Promise<void> {
@@ -530,11 +687,9 @@ export class ReceiveTransfer {
 
   // ---------------------------------------------------------------- internals
 
-  async #reject(
-    reason: 'declined' | 'too-large' | 'no-storage' | 'busy',
-    error: AppError
-  ): Promise<void> {
+  async #reject(reason: TransferReject['reason'], error: AppError): Promise<void> {
     if (isTerminal(this.state)) return
+    this.#rejectReason = reason
     this.#finishWith('REJECTED', error)
     await this.#send(message({t: 'TRANSFER_REJECT', transferId: this.id, reason}))
   }
@@ -551,7 +706,7 @@ export class ReceiveTransfer {
     try {
       await this.#link.sendControl(msg)
     } catch {
-      // The peer is gone; the reconnect path re-establishes state.
+      // The peer is gone for now; the retry and reconnect paths re-establish state.
     }
   }
 
@@ -604,7 +759,7 @@ export class ReceiveTransfer {
   view(): TransferView {
     const running = this.state === 'TRANSFERRING'
     const remaining = Math.max(0, this.size - this.#receivedBytes)
-    return {
+    this.#view = keepIfSame<TransferView>(this.#view, {
       id: this.id,
       direction: 'receive',
       peerId: this.peerId,
@@ -630,7 +785,8 @@ export class ReceiveTransfer {
       canRetry: false,
       canPause: this.state === 'TRANSFERRING' || this.state === 'PAUSED',
       canCancel: !isTerminal(this.state)
-    }
+    })
+    return this.#view
   }
 }
 

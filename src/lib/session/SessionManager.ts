@@ -1,15 +1,19 @@
-import {CHUNK_SIZE, LIMITS, MAX_PEERS, TIMEOUTS} from '../core/config.ts'
+import {LIMITS, MAX_PEERS, TIMEOUTS} from '../core/config.ts'
 import {AppError, friendly, toAppError, type ErrorCode} from '../core/errors.ts'
 import {Emitter} from '../core/events.ts'
+import {randomId} from '../core/ids.ts'
 import {decodeChunk} from '../protocol/frame.ts'
 import {message, type ControlMessage} from '../protocol/messages.ts'
-import {MessageRateLimiter, parseControl} from '../protocol/validate.ts'
+import {MAX_CHUNK_SIZE, MessageRateLimiter, parseControl} from '../protocol/validate.ts'
 import {
   describeStorageSupport,
   purgeOpfs,
   type StoragePreferences,
   type StorageSupport
 } from '../storage/index.ts'
+import type {PeerLink} from '../transfer/PeerLink.ts'
+import {TransferManager} from '../transfer/TransferManager.ts'
+import type {SharedFileView, TransferView} from '../transfer/states.ts'
 import {TrysteroTransport} from '../transport/TrysteroTransport.ts'
 import {agreeKind, withKind} from '../transport/pathClassifier.ts'
 import {
@@ -19,6 +23,16 @@ import {
   type PeerId,
   type Transport
 } from '../transport/Transport.ts'
+import {
+  guessDeviceKind,
+  loadDeviceId,
+  loadDeviceName,
+  sanitizeDeviceName,
+  saveDeviceName
+} from '../utils/device.ts'
+import {keepIfSame} from '../utils/stable.ts'
+import {sanitizeSharedText} from '../utils/text.ts'
+import {RoomManager, loadRoom, saveRoom, type RoomRole} from './RoomManager.ts'
 
 /**
  * How a session gets its transport. Injected rather than constructed inside,
@@ -29,19 +43,6 @@ import {
  * every time it opens, joins or reconnects, and tears the previous one down.
  */
 export type TransportFactory = (options: {localOnly: boolean}) => Transport
-import type {PeerLink} from '../transfer/PeerLink.ts'
-import {TransferManager} from '../transfer/TransferManager.ts'
-import type {SharedFileView, TransferView} from '../transfer/states.ts'
-import {
-  guessDeviceKind,
-  loadDeviceId,
-  loadDeviceName,
-  sanitizeDeviceName,
-  saveDeviceName
-} from '../utils/device.ts'
-import {randomId} from '../core/ids.ts'
-import {sanitizeSharedText} from '../utils/text.ts'
-import {RoomManager, loadRoom, saveRoom, type RoomRole} from './RoomManager.ts'
 
 export type SessionStatus = 'starting' | 'open' | 'ended'
 
@@ -178,6 +179,8 @@ export class SessionManager {
   #requireApproval = false
   #expiryTimer: ReturnType<typeof setTimeout> | null = null
   #unsubscribe: (() => void)[] = []
+  /** Last roster entry handed out per peer, so an unchanged one keeps its identity. */
+  #peerViews = new Map<PeerId, PeerInfo>()
 
   #createTransport: TransportFactory
 
@@ -198,7 +201,13 @@ export class SessionManager {
     const room = this.#rooms.current
     // Other tabs of this same device are peers on the wire but not devices to
     // show, send to, or count.
-    const peers = [...this.#peers.values()].filter(peer => !peer.isSelf)
+    const records = [...this.#peers.values()].filter(peer => !peer.isSelf)
+    const views = new Map<PeerId, PeerInfo>()
+    for (const peer of records) {
+      views.set(peer.id, keepIfSame(this.#peerViews.get(peer.id), this.#peerInfo(peer)))
+    }
+    this.#peerViews = views
+    const peers = [...views.values()]
     return {
       status: this.#status,
       signaling: this.#signaling,
@@ -209,8 +218,8 @@ export class SessionManager {
       shareUrl: this.#rooms.shareUrl(),
       expiresAt: room?.expiresAt ?? null,
       selfName: this.#selfName,
-      peers: peers.filter(peer => peer.approved).map(toPeerInfo),
-      pending: peers.filter(peer => !peer.approved).map(toPeerInfo),
+      peers: peers.filter(peer => peer.approved),
+      pending: peers.filter(peer => !peer.approved),
       shared: this.#transfers.sharedFiles(),
       incoming: this.#transfers.incoming(),
       error: this.#error ? {code: this.#error.code, ...friendly(this.#error)} : null,
@@ -265,11 +274,41 @@ export class SessionManager {
    * Trystero re-announces every 5.3s on its own, so automatic rebuilding is not
    * only risky but redundant — this exists for the case where the page came
    * back from being frozen and its sockets never did.
+   *
+   * Only the connection is rebuilt. This used to go through the same path as
+   * opening a room, which reset the transfers — so the button offered for a
+   * stuck device threw away everything this device had shared and every
+   * transfer in flight, while the other device kept offers nobody would serve.
+   * Instead every device is treated as having dropped, exactly as a network
+   * blip would: transfers wait in RECONNECTING, and when each device reappears
+   * on the new connection — under the same id, which a transport keeps for the
+   * life of the page — they resume from what the receiver actually has.
    */
   async reconnect(): Promise<boolean> {
     const room = this.#rooms.current
-    if (!room || this.#busy) return false
-    return this.#start(() => room)
+    if (!room || this.#busy || this.#status !== 'open') return false
+    this.#busy = true
+    this.#error = null
+    this.#changed()
+
+    try {
+      for (const peer of [...this.#peers.values()]) this.#onPeerLeave(peer.id)
+      await this.#teardownTransport()
+      const transport = this.#createTransport({localOnly: this.#localOnly})
+      this.#transport = transport
+      this.#wireTransport(transport)
+      await transport.join(room.code)
+      this.#watchSignaling()
+      return true
+    } catch (err) {
+      // The room and everything in it stay; pressing the button again retries.
+      this.#error = toAppError(err, 'connection-failed')
+      await this.#teardownTransport()
+      return false
+    } finally {
+      this.#busy = false
+      this.#changed()
+    }
   }
 
   async #start(makeRoom: () => {code: string}): Promise<boolean> {
@@ -322,6 +361,12 @@ export class SessionManager {
         this.#changed()
       }),
       transport.on('error', ({error}) => {
+        // A handshake failing while devices are connected is one of the extra
+        // attempts a busy room makes to reach someone — usually a device that
+        // is already here, over a second path that lost the race. Saying
+        // "Couldn't connect to the other device" above a room full of connected
+        // devices is untrue. It only means something when nobody is here.
+        if (error.code === 'connection-failed' && [...this.#peers.values()].some(p => p.present)) return
         this.#error = error
         this.#changed()
       })
@@ -392,7 +437,9 @@ export class SessionManager {
 
   #onPeerLeave(peerId: PeerId): void {
     const peer = this.#peers.get(peerId)
-    if (!peer) return
+    // Already gone: a second report of the same departure must not restart the
+    // reconnect window, or a peer reported twice gets twice as long.
+    if (!peer?.present) return
 
     peer.present = false
     // A reconnect can land on an entirely different path, so both reads of the
@@ -488,7 +535,9 @@ export class SessionManager {
   #onChunk(peerId: PeerId, data: Uint8Array): void {
     const peer = this.#peers.get(peerId)
     if (!peer?.approved) return
-    const frame = decodeChunk(data, CHUNK_SIZE)
+    // Bounded by the largest chunk any offer may declare; the transfer it
+    // belongs to then holds it to that offer's exact chunk size.
+    const frame = decodeChunk(data, MAX_CHUNK_SIZE)
     if (!frame) return // Malformed frames are dropped, never guessed at.
     this.#transfers.handleChunk(peerId, frame)
   }
@@ -610,7 +659,6 @@ export class SessionManager {
     this.#changed()
   }
 
-  /** Removes a device and stops it rejoining for the rest of the session. */
   /**
    * Ends the session with a connected device, and nothing more.
    *
@@ -767,9 +815,17 @@ export class SessionManager {
     this.#changed()
   }
 
+  /**
+   * Takes effect at once, by rebuilding the connection with the new ICE
+   * settings. It used to wait for the next connection, because rebuilding one
+   * meant losing everything shared; now that a reconnect keeps it all, a switch
+   * labelled "refuses anything but a local connection" can simply do that.
+   */
   setLocalOnly(enabled: boolean): void {
+    if (this.#localOnly === enabled) return
     this.#localOnly = enabled
     this.#changed()
+    if (this.#status === 'open') void this.reconnect()
   }
 
   setRequireApproval(enabled: boolean): void {
@@ -793,11 +849,36 @@ export class SessionManager {
     this.#changed()
   }
 
-  hasActiveTransfers(): boolean {
-    return this.#transfers.hasActiveTransfers()
+  /** Bytes are moving in either direction — what keeps the screen awake. */
+  hasMovingTransfers(): boolean {
+    return this.#transfers.hasMovingTransfers()
+  }
+
+  /** Closing the page now would lose a transfer or a share nobody has taken yet. */
+  hasUnfinishedWork(): boolean {
+    return this.#transfers.hasUnfinishedWork()
   }
 
   // ---------------------------------------------------------------- internals
+
+  #peerInfo(peer: PeerRecord): PeerInfo {
+    const path = agreedPath(peer)
+    // The agreed kind comes from events, which only fire when it changes; the
+    // round trip is read fresh, and to the millisecond, so it stays current
+    // without churning the roster on every sub-millisecond wobble.
+    const rtt = this.#transport?.pathFor(peer.id).roundTripMs
+    return {
+      id: peer.id,
+      name: peer.name,
+      kind: peer.kind,
+      present: peer.present,
+      approved: peer.approved,
+      path:
+        rtt === undefined || rtt === null || path.kind === 'unknown'
+          ? path
+          : {...path, roundTripMs: Math.round(rtt)}
+    }
+  }
 
   #linkFor(peerId: PeerId): PeerLink {
     return {
@@ -807,21 +888,23 @@ export class SessionManager {
         // of this device, whatever route reached this link.
         return (
           this.#status === 'open' &&
+          this.#transport !== null &&
           peer?.present === true &&
           peer.approved &&
           !peer.isSelf
         )
       },
-      sendControl: async (msg: ControlMessage) => {
+      sendControl: async (msg: ControlMessage, options) => {
         const transport = this.#transport
         if (!transport) throw new AppError('connection-lost')
-        await transport.sendControl(peerId, msg)
+        await transport.sendControl(peerId, msg, options)
       },
       sendChunk: async frame => {
         const transport = this.#transport
         if (!transport) throw new AppError('connection-lost')
         await transport.sendChunk(peerId, frame)
-      }
+      },
+      maxFrameBytes: () => this.#transport?.maxFrameBytes(peerId) ?? Number.POSITIVE_INFINITY
     }
   }
 
@@ -904,6 +987,16 @@ export class SessionManager {
     this.#changed()
   }
 
+  /** Shuts the session down for good — every timer, the transport, all transfers. */
+  async dispose(): Promise<void> {
+    if (this.#expiryTimer !== null) clearTimeout(this.#expiryTimer)
+    this.#expiryTimer = null
+    this.#clearPeers()
+    await this.#teardownTransport()
+    this.#transfers.dispose()
+    this.#emitter.clear()
+  }
+
   #clearPeers(): void {
     for (const peer of this.#peers.values()) {
       if (peer.dropTimer !== null) clearTimeout(peer.dropTimer)
@@ -938,17 +1031,6 @@ export class SessionManager {
 
   #changed(): void {
     this.#emitter.emit('change', undefined)
-  }
-}
-
-function toPeerInfo(peer: PeerRecord): PeerInfo {
-  return {
-    id: peer.id,
-    name: peer.name,
-    kind: peer.kind,
-    present: peer.present,
-    approved: peer.approved,
-    path: agreedPath(peer)
   }
 }
 

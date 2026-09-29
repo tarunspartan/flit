@@ -23,7 +23,9 @@ const TRANSITIONS: Record<TransferState, readonly TransferState[]> = {
   QUEUED: ['WAITING_FOR_ACCEPT', 'CANCELLED', 'FAILED'],
   WAITING_FOR_ACCEPT: ['TRANSFERRING', 'REJECTED', 'CANCELLED', 'FAILED', 'RECONNECTING'],
   TRANSFERRING: ['PAUSED', 'RECONNECTING', 'VERIFYING', 'CANCELLED', 'FAILED'],
-  PAUSED: ['TRANSFERRING', 'RECONNECTING', 'CANCELLED', 'FAILED'],
+  // PAUSED can reach VERIFYING: a pause stops new chunks, but every chunk may
+  // already have been on its way, and the completion that follows them is real.
+  PAUSED: ['TRANSFERRING', 'RECONNECTING', 'VERIFYING', 'CANCELLED', 'FAILED'],
   // Reconnecting can land back in WAITING_FOR_ACCEPT: resume is renegotiated.
   // It can also go straight to VERIFYING when every byte was already sent and
   // only the verification handshake was lost with the connection.

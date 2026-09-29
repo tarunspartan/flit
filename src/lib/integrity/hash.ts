@@ -11,7 +11,7 @@
  * throughput bottleneck.
  */
 import type {Bytes} from '../core/bytes.ts'
-import {HASH_ALGORITHM} from '../protocol/messages.ts'
+import {HASH_ALGORITHM, type ChunkRange} from '../protocol/messages.ts'
 
 export const DIGEST_BYTES = 32
 
@@ -34,6 +34,10 @@ export class ChunkTreeHasher {
   #digests: Bytes | null = null
   #present: Uint8Array
   #count = 0
+  /** The finished root, until a digest changes. */
+  #root: Promise<string> | null = null
+  /** Digests being computed right now, by chunk. */
+  #hashing = new Map<number, Promise<void>>()
 
   constructor(size: number, chunkSize: number, totalChunks: number) {
     this.size = size
@@ -58,12 +62,30 @@ export class ChunkTreeHasher {
     this.setDigest(index, await sha256(payload))
   }
 
+  /**
+   * Hashes a chunk unless its digest is known or already being computed.
+   *
+   * For a hasher shared by several transfers of one file: two devices
+   * downloading it at once would otherwise both hash every chunk, because each
+   * checks `has()` while the other's digest is still in flight.
+   */
+  ensure(index: number, payload: Bytes): Promise<void> {
+    if (this.has(index)) return Promise.resolve()
+    let pending = this.#hashing.get(index)
+    if (!pending) {
+      pending = this.add(index, payload).finally(() => this.#hashing.delete(index))
+      this.#hashing.set(index, pending)
+    }
+    return pending
+  }
+
   setDigest(index: number, digest: Bytes): void {
     if (index < 0 || index >= this.totalChunks) return
     if (digest.byteLength !== DIGEST_BYTES) return
 
     this.#digests ??= new Uint8Array(this.totalChunks * DIGEST_BYTES)
     this.#digests.set(digest, index * DIGEST_BYTES)
+    this.#root = null
     if (this.#present[index] !== 1) {
       this.#present[index] = 1
       this.#count++
@@ -85,10 +107,53 @@ export class ChunkTreeHasher {
     return n
   }
 
-  async root(): Promise<string> {
-    if (!this.complete) {
-      throw new Error(`cannot hash: ${this.#count}/${this.totalChunks} chunks present`)
+  /**
+   * The chunks still absent, as ascending half-open ranges.
+   *
+   * `skip` excludes chunks that are on their way in but not yet recorded, so
+   * asking for the gaps never re-requests something already being written. At
+   * most `maxRanges` come back: past that the last one is left open to the end
+   * of the file, which may re-request a few present chunks but can never leave
+   * a missing one out.
+   */
+  missingRanges(maxRanges: number, skip?: (index: number) => boolean): ChunkRange[] {
+    const ranges: ChunkRange[] = []
+    let start = -1
+    for (let i = 0; i < this.totalChunks; i++) {
+      const needed = this.#present[i] !== 1 && !skip?.(i)
+      if (needed && start === -1) {
+        start = i
+        if (ranges.length === maxRanges - 1) {
+          ranges.push([start, this.totalChunks])
+          return ranges
+        }
+      } else if (!needed && start !== -1) {
+        ranges.push([start, i])
+        start = -1
+      }
     }
+    if (start !== -1) ranges.push([start, this.totalChunks])
+    return ranges
+  }
+
+  /**
+   * The content hash. Computed once and reused: a room of eight devices shares
+   * one hasher per file, and a re-announced completion asks for it again.
+   */
+  root(): Promise<string> {
+    if (!this.complete) {
+      return Promise.reject(
+        new Error(`cannot hash: ${this.#count}/${this.totalChunks} chunks present`)
+      )
+    }
+    this.#root ??= this.#computeRoot().catch(err => {
+      this.#root = null
+      throw err
+    })
+    return this.#root
+  }
+
+  async #computeRoot(): Promise<string> {
     // Bind the structure into the hash so two different chunkings of the same
     // bytes cannot collide, and an empty file still gets a well-defined value.
     const prefix = new TextEncoder().encode(
@@ -99,15 +164,5 @@ export class ChunkTreeHasher {
     buffer.set(prefix, 0)
     buffer.set(digests.subarray(0, this.totalChunks * DIGEST_BYTES), prefix.byteLength)
     return toHex(await sha256(buffer))
-  }
-
-  /** Drops digests above `chunks` so a resume recomputes them. */
-  truncateTo(chunks: number): void {
-    for (let i = chunks; i < this.totalChunks; i++) {
-      if (this.#present[i] === 1) {
-        this.#present[i] = 0
-        this.#count--
-      }
-    }
   }
 }
