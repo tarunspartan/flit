@@ -200,6 +200,11 @@ export class ReceiveTransfer {
     this.#store = store
     this.startedAt = Date.now()
     this.#quietSince = Date.now()
+    // The stall clock starts now, not when the offer arrived. Left at the
+    // offer's time, a file accepted more than a stall window later failed as
+    // "nothing arrived" within seconds — before its sender, still busy with
+    // the file ahead of it in the same batch, had sent it a single chunk.
+    this.lastActivity = Date.now()
     this.#transition('TRANSFERRING')
     await this.#send(message({t: 'TRANSFER_ACCEPT', transferId: this.id, fromChunk: 0}))
   }
@@ -560,8 +565,12 @@ export class ReceiveTransfer {
     // of life, so a flapping peer cannot hold the transfer open forever.
     const since = reconnecting ? (this.#lostAt ?? this.lastActivity) : this.lastActivity
     if (now - since > limit) {
-      this.#fail(new AppError(reconnecting ? 'connection-lost' : 'transfer-stalled'))
+      const error = new AppError(reconnecting ? 'connection-lost' : 'transfer-stalled')
+      this.#fail(error)
       void this.#store?.abort()
+      // Say so, or the sender — which may have sent every byte — sits at 100%
+      // waiting on a receiver that has already given up.
+      void this.#send(message({t: 'TRANSFER_ERROR', transferId: this.id, code: error.code}))
     }
   }
 

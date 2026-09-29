@@ -6,6 +6,7 @@ import {deriveRoomTopic} from '../core/ids.ts'
 import {BulkChannel} from './BulkChannel.ts'
 import {classifyPath, steadyPath} from './pathClassifier.ts'
 import {resolveIceServers} from './iceServers.ts'
+import {openWarmUpLane, warmUp} from './warmUp.ts'
 import {
   isDeadConnection,
   UNKNOWN_PATH,
@@ -42,6 +43,9 @@ type Send<T> = (data: T, options: {target: string}) => Promise<void>
 interface Link {
   readonly pc: RTCPeerConnection
   readonly bulk: BulkChannel | null
+  /** The filler lane that brings a new local connection up to speed; see warmUp.ts. */
+  readonly warm: RTCDataChannel | null
+  warmed: boolean
 }
 
 /**
@@ -217,7 +221,9 @@ export class TrysteroTransport implements Transport {
       bulk: BulkChannel.open(pc, {
         onChunk: data => this.#emitter.emit('chunk', {peerId, data}),
         onControl: raw => this.#emitter.emit('control', {peerId, raw})
-      })
+      }),
+      warm: openWarmUpLane(pc),
+      warmed: false
     })
     this.#arrived(peerId)
   }
@@ -271,6 +277,11 @@ export class TrysteroTransport implements Transport {
         Date.now() - since < PATH_SETTLE_MS
       const path = settling ? UNKNOWN_PATH : steadyPath(previous, fresh)
       this.#paths.set(peerId, path)
+      // Local, and so free to warm: see warmUp.ts. Once per connection.
+      if (path.kind === 'local' && !link.warmed && link.warm) {
+        link.warmed = true
+        warmUp(link.warm, link.pc.sctp?.maxMessageSize)
+      }
       // Only wake the UI when the classification actually changes; RTT drifts
       // constantly and is read from pathFor() when a snapshot is taken.
       if (!previous || previous.kind !== path.kind || previous.network !== path.network) {

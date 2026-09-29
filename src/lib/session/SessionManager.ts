@@ -361,6 +361,12 @@ export class SessionManager {
         this.#changed()
       }),
       transport.on('error', ({error}) => {
+        // A handshake failing while devices are connected is one of the extra
+        // attempts a busy room makes to reach someone — usually a device that
+        // is already here, over a second path that lost the race. Saying
+        // "Couldn't connect to the other device" above a room full of connected
+        // devices is untrue. It only means something when nobody is here.
+        if (error.code === 'connection-failed' && [...this.#peers.values()].some(p => p.present)) return
         this.#error = error
         this.#changed()
       })

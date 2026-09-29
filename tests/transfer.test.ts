@@ -493,6 +493,37 @@ describe('transfer end to end', () => {
     expect(wire.sender!.state).toBe('FAILED')
   })
 
+  it('starts the stall clock when a file is accepted, not when it was offered', async () => {
+    const {file, data} = makeFile(CHUNK_SIZE * 2)
+    const wire = start(file)
+    await waitFor(() => wire.receiver !== null)
+    // Offered well over a stall window ago, and only accepted now — while the
+    // sender has not yet sent a chunk, as when it is busy with the file ahead
+    // of this one in the same batch.
+    wire.receiver!.lastActivity = Date.now() - TIMEOUTS.transferStallMs - 10_000
+    const hold = holdFrom(wire, 0)
+    await wire.receiver!.accept()
+    wire.receiver!.tick(Date.now())
+    expect(wire.receiver!.state).toBe('TRANSFERRING')
+
+    hold.release()
+    await waitFor(() => wire.receiver!.state === 'COMPLETED')
+    expectSameBytes(new Uint8Array(await wire.receiver!.received!.arrayBuffer()), data)
+  })
+
+  it('tells the sender when it gives up on a stalled transfer', async () => {
+    const {file} = makeFile(CHUNK_SIZE * 2)
+    const wire = start(file)
+    await waitFor(() => wire.receiver !== null)
+    const hold = holdFrom(wire, 0)
+    await wire.receiver!.accept()
+    wire.receiver!.checkStall(Date.now() + TIMEOUTS.transferStallMs + 1)
+    expect(wire.receiver!.state).toBe('FAILED')
+    await waitFor(() => isTerminal(wire.sender!.state))
+    expect(wire.sender!.state).toBe('FAILED')
+    hold.release()
+  })
+
   it('rejects a chunk whose length contradicts the offer', async () => {
     const {file} = makeFile(CHUNK_SIZE * 2)
     const wire = start(file)
