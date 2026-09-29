@@ -112,6 +112,94 @@ describe('download slots', () => {
     expect(manager.incoming().map(transfer => transfer.queuePosition)).toEqual([null, 1, 2])
   })
 
+  describe('with a save dialog', () => {
+    /**
+     * The first call opens a dialog that stays open until the test answers
+     * it. Any call while it is open fails the way a browser fails a second
+     * picker, or one opened with no click behind it.
+     */
+    function installPicker() {
+      let answer: ((choice: 'save' | 'cancel') => void) | null = null
+      let calls = 0
+      Object.defineProperty(globalThis, 'showSaveFilePicker', {
+        configurable: true,
+        writable: true,
+        value: () => {
+          calls++
+          if (calls > 1) return Promise.reject(new DOMException('File picker already active.', 'NotAllowedError'))
+          return new Promise((resolve, reject) => {
+            answer = choice =>
+              choice === 'cancel'
+                ? reject(new DOMException('The user aborted a request.', 'AbortError'))
+                : resolve({
+                    createWritable: async () => ({write: async () => {}, close: async () => {}, abort: async () => {}})
+                  })
+          })
+        }
+      })
+      return {answer: (choice: 'save' | 'cancel') => answer?.(choice), calls: () => calls}
+    }
+
+    afterEach(() => {
+      // @ts-expect-error removing the stub again
+      delete globalThis.showSaveFilePicker
+    })
+
+    function downloadAll(count: number) {
+      const {manager, sent} = managerWith()
+      manager.setPreferences({alwaysChooseLocation: true})
+      for (let i = 0; i < count; i++) manager.handleControl('peer', offer(64 * 1024))
+      for (const transfer of manager.incoming()) manager.accept(transfer.id)
+      return {manager, sent}
+    }
+
+    it('downloads nothing while the dialog is open', async () => {
+      // The regression: the dialog opened for the first file and the rest,
+      // refused a dialog of their own, fell back to browser storage and
+      // started downloading behind it before anyone had chosen anything.
+      const picker = installPicker()
+      const {sent} = downloadAll(3)
+      await settle()
+      expect(picker.calls()).toBe(1)
+      expect(accepted(sent)).toBe(0)
+    })
+
+    it('takes Cancel as the answer for the whole Download all', async () => {
+      const picker = installPicker()
+      const {manager, sent} = downloadAll(3)
+      await settle()
+      picker.answer('cancel')
+      await settle()
+      expect(accepted(sent)).toBe(0)
+      // Every Download button back, nothing still queued to start later.
+      expect(manager.incoming().map(transfer => [transfer.state, transfer.queuePosition])).toEqual([
+        ['WAITING_FOR_ACCEPT', null],
+        ['WAITING_FOR_ACCEPT', null],
+        ['WAITING_FOR_ACCEPT', null]
+      ])
+    })
+
+    it('asks for files that were already waiting when the setting was turned on', async () => {
+      const picker = installPicker()
+      const {manager, sent} = managerWith()
+      manager.handleControl('peer', offer(64 * 1024))
+      manager.setPreferences({alwaysChooseLocation: true})
+      manager.accept(manager.incoming()[0]!.id)
+      await settle()
+      expect(picker.calls()).toBe(1)
+      expect(accepted(sent)).toBe(0)
+    })
+
+    it('starts the rest once a location is chosen', async () => {
+      const picker = installPicker()
+      const {sent} = downloadAll(3)
+      await settle()
+      picker.answer('save')
+      await settle()
+      expect(accepted(sent)).toBe(3)
+    })
+  })
+
   it('answers a repeated offer instead of listing the file twice', async () => {
     const {manager, sent} = managerWith()
     const first = offer(1024)

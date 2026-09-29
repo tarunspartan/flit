@@ -81,6 +81,18 @@ export class TransferManager {
    * times. Claiming synchronously closes that gap.
    */
   #claimed = new Set<ReceiveTransfer>()
+  /**
+   * The download whose save dialog is open, if any.
+   *
+   * Only one dialog can be open at a time, so "Download all" used to open it
+   * for the first file and have the browser refuse it for the rest — which
+   * quietly fell back to browser storage and started downloading behind the
+   * dialog, before anyone had said where anything should go. Nothing starts
+   * while a dialog is open.
+   */
+  #choosing: ReceiveTransfer | null = null
+  /** Accepts made while that dialog was open: the rest of the same "Download all". */
+  #heldByDialog = new Set<ReceiveTransfer>()
   /** Peers with an offer loop running, and whether it should go round again. */
   #offering = new Map<string, boolean>()
   #nextSeq = 1
@@ -101,6 +113,7 @@ export class TransferManager {
 
   setPreferences(prefs: StoragePreferences): void {
     this.#prefs = prefs
+    for (const transfer of this.#receives.values()) transfer.setPreferences(prefs)
   }
 
   // ------------------------------------------------------------ shared files
@@ -384,18 +397,44 @@ export class TransferManager {
       this.#beginDownload(transfer)
       return
     }
+    if (this.#choosing) this.#heldByDialog.add(transfer)
     this.#queuedAccepts.add(transfer)
     this.#pumpDownloads(transfer.peerId)
   }
 
   #beginDownload(transfer: ReceiveTransfer): void {
     this.#claimed.add(transfer)
+    const asks = transfer.asksWhereToSave
+    if (asks) this.#choosing = transfer
     // Once accept() settles the transfer holds its slot by state instead —
     // or, if the save dialog was dismissed, hands it back.
     void transfer.accept().finally(() => {
       this.#claimed.delete(transfer)
+      if (asks && this.#choosing === transfer) this.#dialogClosed(transfer)
       this.#pumpDownloads(transfer.peerId)
     })
+  }
+
+  /**
+   * Still undecided once its dialog has closed means the dialog was dismissed.
+   * Cancel answers for the whole click that opened it, so the files that were
+   * waiting behind it get their Download buttons back instead of downloading.
+   */
+  #dialogClosed(transfer: ReceiveTransfer): void {
+    this.#choosing = null
+    const held = [...this.#heldByDialog]
+    this.#heldByDialog.clear()
+    if (transfer.state === 'WAITING_FOR_ACCEPT') {
+      for (const other of held) {
+        this.#queuedAccepts.delete(other)
+        other.queuePosition = null
+      }
+      this.#changed()
+    }
+    // The dialog held back every device's downloads, not only this one's.
+    for (const peerId of new Set([...this.#queuedAccepts].map(queued => queued.peerId))) {
+      if (peerId !== transfer.peerId) this.#pumpDownloads(peerId)
+    }
   }
 
   /**
@@ -409,6 +448,7 @@ export class TransferManager {
   unqueue(id: string): void {
     const transfer = this.#findReceive(id)
     if (!transfer || !this.#queuedAccepts.delete(transfer)) return
+    this.#heldByDialog.delete(transfer)
     transfer.queuePosition = null
     this.#pumpDownloads(transfer.peerId)
     this.#changed()
@@ -416,6 +456,7 @@ export class TransferManager {
 
   /** Whether a download from this transfer's device could start now. */
   #hasSlot(candidate: ReceiveTransfer): boolean {
+    if (this.#choosing) return false
     let running = 0
     let allSmall = candidate.size <= SMALL_FILE_BYTES
     for (const transfer of this.#receives.values()) {

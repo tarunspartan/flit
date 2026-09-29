@@ -149,6 +149,21 @@ export class ReceiveTransfer {
     this.#hasher = new ChunkTreeHasher(offer.size, offer.chunkSize, offer.totalChunks)
   }
 
+  /** Whether accepting this opens a save dialog before anything is downloaded. */
+  get asksWhereToSave(): boolean {
+    return usesChosenLocation(this.size, this.#prefs)
+  }
+
+  /**
+   * Follows the "Always choose where to save" setting. Without this an offer
+   * kept the setting from when it arrived, so turning it on changed nothing
+   * for the files already waiting — the ones you turned it on for.
+   */
+  setPreferences(prefs: StoragePreferences): void {
+    this.#prefs = prefs
+    if (this.state === 'WAITING_FOR_ACCEPT') void this.prepare()
+  }
+
   /** Storage advice shown next to Accept/Reject (§66.9). */
   async prepare(): Promise<void> {
     // Only judged against the origin quota when the bytes will actually land
