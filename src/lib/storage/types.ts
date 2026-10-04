@@ -16,7 +16,12 @@ export interface FinalizeResult {
 
 export interface ReceiverStore {
   readonly kind: StoreKind
-  /** Writes at an absolute offset; safe to call with duplicate offsets. */
+  /**
+   * Writes at an absolute offset; safe to call with duplicate offsets.
+   *
+   * Takes ownership of `data`: the caller must not read it afterwards, which
+   * lets a store hand the buffer to a worker instead of copying it.
+   */
   write(offset: number, data: Bytes): Promise<void>
   /** Makes prior writes durable enough to checkpoint against. */
   flush(): Promise<void>
@@ -24,6 +29,11 @@ export interface ReceiverStore {
   finalize(): Promise<FinalizeResult>
   /** Discards partial data. Always safe to call, including twice. */
   abort(): Promise<void>
+  /**
+   * Frees whatever the store still holds once nobody needs the file — the
+   * finalized copy too. Safe after abort, and safe to call twice.
+   */
+  release(): Promise<void>
 }
 
 export interface StoreRequest {

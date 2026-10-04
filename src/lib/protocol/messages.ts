@@ -79,14 +79,33 @@ export interface TransferOffer extends Base<'TRANSFER_OFFER'> {
   batchId?: string
 }
 
+/** Half-open chunk range `[start, end)`. */
+export type ChunkRange = [start: number, end: number]
+
 /**
- * The receiver's go-ahead. Sent once on consent and again after a successful
- * resume negotiation — in both cases it means "send me chunks from here".
+ * The most ranges one TRANSFER_ACCEPT may list. Keeps the message well under
+ * maxControlMessageBytes; a receiver with more gaps than this folds the tail
+ * into one open-ended range, which costs duplicates but never a missing chunk.
+ */
+export const MAX_MISSING_RANGES = 256
+
+/**
+ * The receiver's go-ahead. Sent once on consent and again whenever it needs
+ * more chunks — after a resume, after spotting gaps at completion, or when the
+ * sender has gone quiet. In every case it means "send me what I lack".
  */
 export interface TransferAccept extends Base<'TRANSFER_ACCEPT'> {
   transferId: string
   /** First chunk the receiver still needs — non-zero when resuming. */
   fromChunk: number
+  /**
+   * Exactly which chunks are missing, ascending and non-overlapping, covering
+   * everything up to the end of the file. Lets the sender resend only the gaps
+   * instead of everything after the first one. Optional: an older sender
+   * ignores it and resends from `fromChunk`, which is still correct because
+   * duplicate chunks are harmless.
+   */
+  missing?: ChunkRange[]
 }
 
 export interface TransferReject extends Base<'TRANSFER_REJECT'> {
@@ -132,7 +151,14 @@ export interface TransferCancel extends Base<'TRANSFER_CANCEL'> {
   reason: 'user' | 'error' | 'storage' | 'shutdown'
 }
 
-/** Sender → receiver: all chunks are out, here is the expected content hash. */
+/**
+ * Sender → receiver: all chunks are out, here is the expected content hash.
+ *
+ * The one message whose order relative to chunks matters: it claims every chunk
+ * has been sent, so it must not overtake the chunks it summarizes. It is sent
+ * with `afterChunks`, which puts it on the file-data path behind them (see
+ * Transport.sendControl).
+ */
 export interface TransferComplete extends Base<'TRANSFER_COMPLETE'> {
   transferId: string
   contentHash: string

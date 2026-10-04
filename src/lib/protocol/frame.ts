@@ -8,9 +8,30 @@
  */
 
 import type {Bytes} from '../core/bytes.ts'
+import {CHUNK_SIZE} from '../core/config.ts'
 
 export const FRAME_HEADER_BYTES = 16
 export const FRAME_VERSION = 1
+
+/** Below this, per-message overhead starts to dominate; never chunk smaller. */
+const MIN_FITTED_CHUNK = 16 * 1024
+
+/**
+ * The chunk size that lets every frame travel as a single data channel message.
+ *
+ * Browsers negotiate a maximum message size — 256 KiB between Chromium and
+ * Safari — and a 256 KiB chunk plus its 16-byte header is just over it. A frame
+ * that does not fit has to be split and put back together on the far side,
+ * which is the copying and bookkeeping this avoids. Rounded to whole KiB so the
+ * chunk grid stays readable in a debugger.
+ */
+export function chunkSizeFor(maxFrameBytes: number | undefined): number {
+  if (maxFrameBytes === undefined || !Number.isFinite(maxFrameBytes) || maxFrameBytes <= 0) {
+    return CHUNK_SIZE
+  }
+  const fitted = Math.floor((maxFrameBytes - FRAME_HEADER_BYTES) / 1024) * 1024
+  return Math.min(CHUNK_SIZE, Math.max(MIN_FITTED_CHUNK, fitted))
+}
 
 export interface ChunkFrame {
   version: number

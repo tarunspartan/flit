@@ -9,10 +9,19 @@ transfer per device — its own offer, consent, queue position, checkpoints and 
 slow device never holds up the others. Transfer ids and `seq` values are only unique *within* one
 peer, so both are routed by `(peerId, id)`.
 
-Two channels are used, both over the same encrypted DataChannel:
+Each peer connection carries two data channels, both encrypted by the same DTLS session:
 
-- **`ctrl`** — JSON control messages
-- **`chunk`** — binary frames carrying file bytes (never JSON, so payloads are not base64-inflated)
+- **Trystero's channel**, with its **`ctrl`** action — JSON control messages.
+- **`flit-bulk`** — file bytes as binary frames (never JSON, so payloads are not base64-inflated),
+  one frame per message. Created on both ends with a fixed stream id (`negotiated`), so it needs no
+  signaling. `TRANSFER_COMPLETE` travels here too, as a string, because it must arrive *behind*
+  the chunks it summarizes; control and file data otherwise never wait on each other.
+
+Each end says `flit-bulk:hello` on the bulk channel when it opens and answers a hello with
+`flit-bulk:ack`; a side uses the channel for sending only once it has heard either. A peer on an
+older build never answers, so after five seconds file data to it falls back to Trystero's
+**`chunk`** action — one ordered path per connection either way, so completion can never overtake
+the data. Chunks are accepted from both paths.
 
 Every control message carries `v` (protocol version) and, where applicable, a transfer identifier.
 Peers with incompatible major versions fail with a user-facing compatibility error rather than an
@@ -42,6 +51,11 @@ and duplicates are harmless.
 A frame is dropped — never guessed at — if it is shorter than the header, if `byteLength` exceeds
 the negotiated chunk size, or if `byteLength` disagrees with the bytes actually received.
 
+The chunk size is chosen by the sender per transfer and declared in the offer: at most 256 KiB, and
+small enough that a chunk plus its header fits the connection's SCTP max-message-size — 255 KiB
+between Chromium and Safari, which negotiate 256 KiB. The receiver holds every frame to the offer's
+chunk size exactly.
+
 ---
 
 ## Messages
@@ -54,14 +68,14 @@ the negotiated chunk size, or if `byteLength` disagrees with the bytes actually 
 | `PATH_NOTE` | both | How this device reads the shared connection. Cosmetic only — see [Agreeing on the path](#agreeing-on-the-path). |
 | `TEXT_SHARE` | both | A link or short note, capped at `maxTextLength`. Untrusted display text, handled like a filename. |
 | `TRANSFER_OFFER` | sender → receiver | File identity and chunking plan, plus an optional `batchId` shared by everything dropped together. |
-| `TRANSFER_ACCEPT` | receiver → sender | Go-ahead, **from chunk N**. Sent on consent and again after a resume. |
+| `TRANSFER_ACCEPT` | receiver → sender | Go-ahead: **exactly these chunks** (`missing`, as ranges), or everything from `fromChunk`. Sent on consent, after a resume, at a gap, and when the sender goes quiet. |
 | `TRANSFER_REJECT` | receiver → sender | `declined` \| `too-large` \| `no-storage` \| `busy`. |
 | `TRANSFER_PAUSE` | both | User-initiated pause. |
 | `TRANSFER_FLOW` | receiver → sender | Backpressure. Deliberately separate from a user pause so the two cannot cancel each other out. |
 | `TRANSFER_RESUME` | sender → receiver | "Restarting — here is my file identity." |
 | `TRANSFER_CHECKPOINT` | receiver → sender | Contiguous chunks **durably flushed**. |
 | `TRANSFER_CANCEL` | both | `user` \| `error` \| `storage` \| `shutdown`. |
-| `TRANSFER_COMPLETE` | sender → receiver | All chunks sent; here is the content hash. |
+| `TRANSFER_COMPLETE` | sender → receiver | All chunks sent; here is the content hash. Sent behind the chunks, on the bulk channel. |
 | `TRANSFER_VERIFY` | receiver → sender | The verification verdict. |
 | `TRANSFER_ERROR` | both | Typed failure with optional detail. |
 
@@ -92,17 +106,55 @@ sender                                    receiver
   ├── TRANSFER_RESUME {size, lastModified, chunkSize} ──►│
   │                                                      │  identity must match, or
   │                                                      │  TRANSFER_ERROR resume-mismatch
-  │◄──────────── TRANSFER_ACCEPT from=<durable checkpoint>│
-  ├── CHUNK <durable> … ────────────────────────────────►│
+  │                                                      │  flush, then list what is absent
+  │◄──── TRANSFER_ACCEPT from=<first gap> missing=[…] ───┤
+  ├── CHUNK <exactly those> … ──────────────────────────►│
 ```
 
-The sender resumes from the receiver's **durable** checkpoint, not from its own optimistic send
-pointer. Anything above that checkpoint may not have reached disk, so it is discarded and
-re-requested. Restarting from zero when a valid checkpoint exists is a protocol violation.
+The receiver keeps every chunk it has written — it flushes first, which makes them as durable as a
+checkpoint — and asks for exactly the ranges still absent, leaving out chunks already queued for
+writing. The sender sends those and nothing else. At most 256 ranges are listed; past that the
+last one runs to the end of the file, which may repeat a few chunks but never omits one.
+
+`fromChunk` is still the first missing chunk, so an older sender that ignores `missing` resends
+from there, which is correct because duplicates are harmless.
 
 If the connection drops *after* every chunk was sent, the sender re-sends `TRANSFER_COMPLETE` on
 reconnect and the receiver answers idempotently — with the stored verdict if it already verified,
-or with a fresh `TRANSFER_ACCEPT` if chunks are actually missing.
+or with a fresh `TRANSFER_ACCEPT` if chunks are actually missing. Gaps found at completion are
+handled the same way: the receiver lists them, and only they are resent.
+
+**Mid-stream, the sender trusts its own pipe.** A `TRANSFER_ACCEPT` that arrives while the sender
+is still transferring — a receiver nudging a slow link — is planned without the chunks already
+handed to the current connection or being sent right now: the data path is reliable and ordered,
+so those are on their way. After a drop, and once `TRANSFER_COMPLETE` is out, the receiver's list
+is authoritative and followed in full.
+
+### An offer is not a transfer
+
+A dropped connection interrupts nothing that has not been accepted. An offer stays
+`WAITING_FOR_ACCEPT` across any number of blips, with no deadline, and the sender re-sends it when
+the peer comes back — the answer, or the offer itself, may have been lost with the connection. A
+receiver ignores an offer it already has, and answers again one it has already decided: the
+rejection, cancellation, failure, verdict, or — if it accepted and the sender never heard — its
+`TRANSFER_ACCEPT`.
+
+### Asking again
+
+A message can vanish with no error on either end: queued on a channel that then closed, or sent
+while the peer was between connections. So every message that waits for an answer is repeated
+after `TIMEOUTS.retryMs` (5 s) of silence, and each is idempotent at the far end:
+
+| Waiting in | Repeats |
+|---|---|
+| sender `WAITING_FOR_ACCEPT`, offer never reached the link | `TRANSFER_OFFER` |
+| sender `RECONNECTING`, peer reachable | `TRANSFER_RESUME`, or `TRANSFER_COMPLETE` if everything was out |
+| sender `VERIFYING` | `TRANSFER_COMPLETE` |
+| receiver `TRANSFERRING` with no chunk arriving (and no flow pause of its own), or `RECONNECTING` | `TRANSFER_ACCEPT` with what is missing |
+
+The stall watchdog still bounds all of it. It only judges silence from the *peer*: while the
+receiver is draining writes, hashing or saving — a multi-gigabyte `close()` can take a minute — it
+does not count as a stall.
 
 ### Either end may restart it
 
@@ -112,10 +164,14 @@ protocol where only the sender restarts a transfer deadlocks: both ends wait, an
 knows something is wrong is not allowed to say so.
 
 So the end that noticed speaks. The sender sends `TRANSFER_RESUME` when it saw the drop; the
-receiver sends `TRANSFER_ACCEPT{fromChunk}` when it did. That message is the whole negotiation —
-it is what the sender acts on either way — so no new message type is needed. If both ends noticed,
-the sender simply receives it twice and treats the second identically to the first: rewind to that
-chunk and pump. Invariant 1 covers it.
+receiver sends `TRANSFER_ACCEPT{fromChunk, missing}` when it did. That message is the whole
+negotiation — it is what the sender acts on either way — so no new message type is needed. If both
+ends noticed, the sender simply receives it twice and plans from the second exactly as from the
+first. Invariant 1 covers it.
+
+A send that fails on a connection already given up on says nothing about the current one, and is
+ignored: letting it count once knocked a freshly resumed transfer straight back into
+`RECONNECTING`.
 
 The reconnect window is measured from the **first** drop, not from the last sign of life. A peer
 that flaps would otherwise refresh the clock on every reappearance and hold a transfer open forever
@@ -137,7 +193,10 @@ evidence the link works, because the request itself can fail into a dead link.
 5. **All peer input is untrusted.** Names, sizes, MIME types, indices, lengths, and paths are
    validated against the offer before use.
 6. **No file is written without consent.** A device can offer, but only the recipient's
-   `TRANSFER_ACCEPT` starts any writing.
+   `TRANSFER_ACCEPT` starts any writing — and nothing completes without it either: a completion
+   for a transfer the receiver never accepted is ignored.
+7. **Silence is never a verdict.** Every message that expects an answer is asked again until it
+   gets one or the transfer is given up on; nothing waits forever on a message that was lost.
 
 ---
 
@@ -156,7 +215,11 @@ QUEUED ──► WAITING_FOR_ACCEPT ──► TRANSFERRING ──► VERIFYING �
 ```
 
 Terminal states are `COMPLETED`, `REJECTED`, `CANCELLED`, `FAILED`. `RECONNECTING` can return to
-`WAITING_FOR_ACCEPT` (resume renegotiation), `TRANSFERRING`, or `VERIFYING`.
+`WAITING_FOR_ACCEPT` (resume renegotiation), `TRANSFERRING`, or `VERIFYING`. `PAUSED` can reach
+`VERIFYING`: a pause stops new chunks, but every chunk may already have been on its way.
+
+`WAITING_FOR_ACCEPT` never becomes `RECONNECTING` — see [An offer is not a
+transfer](#an-offer-is-not-a-transfer).
 
 The table lives in [`src/lib/transfer/states.ts`](../src/lib/transfer/states.ts) and is enforced —
 illegal transitions are refused, not logged and allowed.
@@ -167,14 +230,18 @@ illegal transitions are refused, not logged and allowed.
 
 Two independent mechanisms, both required:
 
-**Sender.** Trystero waits on `bufferedamountlow` inside a single send, so awaiting one send is
-already backpressure against unbounded DataChannel buffering. On top of that, at most
-`MAX_IN_FLIGHT_CHUNKS` sends are outstanding at once, which keeps the pipeline full while capping
-sender memory at `maxInFlight × chunkSize` regardless of file size.
+**Sender.** A send on the bulk channel waits while more than `BULK_HIGH_WATER` (4 MB) is queued
+and resumes on `bufferedamountlow` at `BULK_LOW_WATER` (1 MB), so awaiting one send is already
+backpressure — and one that cannot happen rejects rather than resolving with the data dropped. On
+top of that, at most `MAX_IN_FLIGHT_CHUNKS` chunks are being read, hashed and sent at once, which
+keeps the pipeline full while capping sender memory regardless of file size. The buffer can be
+modest because control messages no longer queue behind it.
 
-**Receiver.** Writes are queued and awaited. If the queue exceeds 8 MB — disk slower than
-network — the receiver raises `TRANSFER_FLOW{paused:true}` and lowers it once the queue drains
-below 2 MB. This is separate from a user pause so neither can silently override the other.
+**Receiver.** Writes are queued and awaited; each chunk's hash is started as it arrives and runs
+alongside the write. If the queue exceeds 8 MB — disk slower than network — the receiver raises
+`TRANSFER_FLOW{paused:true}` and lowers it once the queue drains below 2 MB. This is separate from
+a user pause so neither can silently override the other. A `TRANSFER_ACCEPT` lifts the sender's
+flow pause, so the receiver re-raises its own right after one if the disk is still behind.
 
 ---
 
@@ -226,3 +293,8 @@ version — reload the page on both devices."
 
 `PATH_NOTE` and `HELLO.deviceId` were both added without a version bump: a build that does not know
 them drops the message as malformed and carries on, which is the intended degradation.
+
+So were `TRANSFER_ACCEPT.missing`, the bulk channel and repeated offers. An older build ignores the
+unknown field and resends from `fromChunk`; never answers the bulk channel's hello, so file data to
+it stays on Trystero's channel; and ignores an offer it already has. Mixed versions interoperate in
+both directions.

@@ -6,6 +6,7 @@
 import {LIMITS} from '../core/config.ts'
 import {PATH_KINDS} from '../transport/Transport.ts'
 import {
+  MAX_MISSING_RANGES,
   MIN_COMPATIBLE_VERSION,
   PROTOCOL_VERSION,
   type ControlMessage,
@@ -17,7 +18,8 @@ export type ParseResult =
   | {ok: false; reason: 'malformed' | 'incompatible-version' | 'too-large'}
 
 const MAX_STRING = 1024
-const MAX_CHUNK_SIZE = 1024 * 1024
+/** The largest chunk an offer may declare, and so the largest frame accepted. */
+export const MAX_CHUNK_SIZE = 1024 * 1024
 const MIN_CHUNK_SIZE = 4 * 1024
 const MAX_TOTAL_CHUNKS = 20_000_000
 
@@ -112,7 +114,11 @@ function validateBody(m: Rec): boolean {
       )
 
     case 'TRANSFER_ACCEPT':
-      return id(m.transferId) && int(m.fromChunk, 0, MAX_TOTAL_CHUNKS)
+      return (
+        id(m.transferId) &&
+        int(m.fromChunk, 0, MAX_TOTAL_CHUNKS) &&
+        (m.missing === undefined || ranges(m.missing))
+      )
 
     case 'TRANSFER_REJECT':
       return id(m.transferId) && oneOf(m.reason, ['declined', 'too-large', 'no-storage', 'busy'] as const)
@@ -172,8 +178,26 @@ function validateBody(m: Rec): boolean {
   }
 }
 
+/** Ascending, non-overlapping, non-empty `[start, end)` pairs within the limits. */
+function ranges(v: unknown): boolean {
+  if (!Array.isArray(v) || v.length > MAX_MISSING_RANGES) return false
+  let floor = 0
+  for (const range of v) {
+    if (!Array.isArray(range) || range.length !== 2) return false
+    const [start, end] = range as unknown[]
+    if (!int(start, floor, MAX_TOTAL_CHUNKS) || !int(end, start + 1, MAX_TOTAL_CHUNKS)) return false
+    floor = end
+  }
+  return true
+}
+
 /**
  * Token bucket guarding against a peer flooding the control channel (§75.2).
+ *
+ * The burst is sized separately from the rate on purpose. It has to absorb the
+ * legitimate spike of a device joining a room and being offered every shared
+ * file at once; deriving it from the rate capped that at 400, and the offers
+ * past it were dropped without a word — files that simply never appeared.
  */
 export class MessageRateLimiter {
   #tokens: number
@@ -181,10 +205,13 @@ export class MessageRateLimiter {
   #perSecond: number
   #burst: number
 
-  constructor(perSecond: number = LIMITS.maxControlMessagesPerSecond) {
+  constructor(
+    perSecond: number = LIMITS.maxControlMessagesPerSecond,
+    burst: number = LIMITS.maxControlMessageBurst
+  ) {
     this.#perSecond = perSecond
-    this.#burst = perSecond * 2
-    this.#tokens = this.#burst
+    this.#burst = burst
+    this.#tokens = burst
   }
 
   allow(now = performance.now()): boolean {

@@ -38,10 +38,36 @@ export async function classifyPath(pc: RTCPeerConnection): Promise<NetworkPath> 
 
   const local = stats.get(pair.localCandidateId) as CandidateStat | undefined
   const remote = stats.get(pair.remoteCandidateId) as CandidateStat | undefined
-  const kind = classify(local, remote)
+  let kind = classify(local, remote)
+  if (kind === 'direct' && remote && sharesIpv6Link(stats, remote)) kind = 'local'
   const rtt = typeof pair.currentRoundTripTime === 'number' ? pair.currentRoundTripTime * 1000 : null
 
   return {kind, protocol: PROTOCOL, network: NETWORK_LABEL[kind], roundTripMs: rtt}
+}
+
+/**
+ * Whether the far end's IPv6 address sits on one of this device's own links.
+ *
+ * IPv6 has no NAT, so a server-reflexive IPv6 candidate is simply the device's
+ * own global address — and ICE routinely picks it over the mDNS host candidate.
+ * Read as "srflx means NAT traversal", two phones on one Wi-Fi were labelled
+ * "Internet" while their packets never left the router. A /64 is the link
+ * prefix, so sharing one with any of our own candidates is same-link evidence.
+ *
+ * IPv6 only, deliberately: two IPv4 devices behind one carrier-grade NAT share
+ * a public address without sharing a network.
+ */
+function sharesIpv6Link(stats: RTCStatsReport, remote: CandidateStat): boolean {
+  const theirs = addressOf(remote)
+  if (!theirs.includes(':')) return false
+  let shared = false
+  stats.forEach(report => {
+    const stat = report as CandidateStat & {type?: string}
+    if (stat.type !== 'local-candidate') return
+    const ours = addressOf(stat)
+    if (ours.includes(':') && sameSubnet(ours, theirs)) shared = true
+  })
+  return shared
 }
 
 interface PairStat {

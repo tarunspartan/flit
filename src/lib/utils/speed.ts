@@ -11,16 +11,17 @@ export class SpeedMeter {
   /**
    * The window is a trade between a steady number and a current one.
    *
-   * At 5s it lagged badly out of the slow start every transfer begins with:
+   * At 5s it lagged badly out of the slow start a new connection begins with:
    * measured against real arrivals, the readout climbed at ~6.5 MB/s per
-   * second while the link was already doing 27, so it under-reported for
-   * several seconds after the transfer had recovered. Halving it doubles the
-   * rate of convergence to ~12 MB/s per second. Two samples rather than three
-   * because a 2.5s window during a slow start may not hold three; `rate()`
-   * still refuses to answer under 250ms of elapsed time, which is what keeps
-   * a single fast pair from reading as a spike.
+   * second while the link was already doing 27. At 2.5s it still took two
+   * seconds to catch up with a jump from 2 to 35 MB/s, so a transfer that had
+   * long since recovered read as "starting slow". 1.5s converges in about one
+   * second, and at full speed still averages over a couple of hundred chunks.
+   * Two samples is the floor because a window during a slow start may not hold
+   * three; `rate()` still refuses to answer under 250ms of elapsed time, which
+   * is what keeps a single fast pair from reading as a spike.
    */
-  constructor(windowMs = 2500, minSamples = 2) {
+  constructor(windowMs = 1500, minSamples = 2) {
     this.#windowMs = windowMs
     this.#minSamples = minSamples
   }

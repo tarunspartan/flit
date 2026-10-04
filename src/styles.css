@@ -408,6 +408,12 @@ button {
   overflow: hidden;
 }
 
+/* Waiting on a decision from you — one file or several, the same ring. */
+.batch--offer {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 /* Strictly one line. Everything is `flex: none` except the identity, so a long
    summary truncates instead of pushing the controls out of line with it. */
 .batch__head {
@@ -440,9 +446,30 @@ button {
   flex: 1;
 }
 
+/* A drop of one is named by its file, and a file's name is never cut short:
+   it wraps, breaking inside a long unspaced name if it has to. */
 .batch__name {
   font-weight: 570;
   font-size: 14.5px;
+  overflow-wrap: anywhere;
+}
+
+/* A drop of one carries its file's state in the summary line, set like the
+   rest of that line rather than right-aligned as it is in a row. */
+.batch__meta .row__state {
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+/* The row's column-holding spacer has no column to hold in a header. */
+.batch__head .row__pad {
+  display: none;
+}
+
+/* Storage advice or a failure reason for a drop of one, under its summary. */
+.batch > .row__warning {
+  margin: 0;
+  padding: 0 12px 10px 50px;
 }
 
 .batch__meta {
@@ -459,13 +486,7 @@ button {
   text-overflow: ellipsis;
 }
 
-.batch__done {
-  font-variant-numeric: tabular-nums;
-}
-
-/* Centred on its row, unlike .details-toggle, which sits under the card it
-   belongs to and is left-aligned there. Separate class rather than a shared
-   one: the two look alike but sit in opposite kinds of box. */
+/* Centred on its row, beside the summary it opens. */
 .batch__toggle {
   display: inline-flex;
   align-items: center;
@@ -585,12 +606,12 @@ button {
   border-top: 0;
 }
 
+/* Wraps rather than being cut short: in a batch of IMG_3101, IMG_3102… the
+   part an ellipsis hid was the part that told the files apart. */
 .row__name {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .row__size {
@@ -642,61 +663,6 @@ button {
   color: var(--danger);
 }
 
-/* The row's own disclosure. A file inside a batch has exactly the same things
-   to say about itself as one shared alone — speed, bytes, storage, integrity,
-   which devices it is going to — and batching is only about offering several
-   at once. Opening a row shows the same body the card shows, so the two can
-   never drift into different feature sets. */
-.row__toggle {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  padding: 4px;
-  border: 0;
-  border-radius: 7px;
-  background: none;
-  color: var(--text-faint);
-  cursor: pointer;
-}
-
-.row__toggle:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.row__toggle .icon {
-  transition: transform 0.15s;
-}
-
-.row__toggle.is-open .icon {
-  transform: rotate(180deg);
-}
-
-/* Full width beneath the row's own line, and visually attached to it. */
-.row__body {
-  flex-basis: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 4px 0 8px;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-}
-
-/* Indented peer lines are already inside a panel here. */
-.row__body .peerlines {
-  padding-left: 0;
-}
-
-.row__body .shared__waiting {
-  padding-left: 0;
-}
-
-.row--open {
-  border-bottom: 0;
-}
-
 .row__acts {
   display: inline-flex;
   align-items: center;
@@ -723,11 +689,9 @@ button {
   color: var(--warn);
 }
 
-.incoming__queued {
-  flex: 1;
-  min-width: 0;
-  font-size: 12.5px;
-  color: var(--text-faint);
+/* Why a file failed, where the row used to need opening to say it. */
+.row__warning--bad {
+  color: var(--danger);
 }
 
 /* One line where the text allows it. Sender, text, and icon controls share the
@@ -1006,10 +970,6 @@ button {
   background: var(--accent-soft);
 }
 
-.button--ghost {
-  background: transparent;
-}
-
 .button--danger {
   color: var(--danger);
 }
@@ -1017,7 +977,6 @@ button {
 .button--danger:hover:not(:disabled) {
   background: var(--danger-soft);
 }
-
 
 .button--small {
   padding: 6px 11px;
@@ -1079,7 +1038,6 @@ button {
 
   .device__act,
   .code__link,
-  .details-toggle,
   .notice__close {
     min-height: 40px;
     padding-inline: 8px;
@@ -1116,24 +1074,39 @@ button {
 /* With room to spare, the code sits beside the QR instead of under it: the
    square is already tall, and stacking pushed the drop target off the fold. */
 @media (min-width: 561px) {
+  /* Two exactly equal halves across the full width, split down the middle:
+     the QR centred in one, the code centred in the other. minmax(0, …) rather
+     than 1fr, which would let the wider half take more than its share. */
   .pair__columns {
-    flex-direction: row;
-    /* Stretch, not center: the divider is the code column's own left edge, and
-       it should run the full height of the QR rather than just the height of
-       the text next to it. */
-    align-items: stretch;
-    gap: 24px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-self: stretch;
+    align-items: center;
+    justify-items: center;
+    gap: 0;
+    container-type: inline-size;
   }
 
-  /* The divider is the column edge itself rather than an element, so there is
-     nothing to hide when the layout stacks again. */
+  /* Before the code exists there is only the QR, and it belongs in the middle. */
+  .pair__columns:has(> :only-child) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The divider is the code half's own left edge, so it sits on the midline
+     and runs the full height of the QR, with nothing to hide when the layout
+     stacks again. */
   .pair__columns > .code {
+    align-self: stretch;
+    justify-self: stretch;
     justify-content: center;
-    /* No align override: the column is only as wide as the code box, so the
-       base centring lines "Copy link" up under it instead of letting it hug
-       the divider. */
-    padding-left: 24px;
     border-left: 1px solid var(--border);
+  }
+
+  /* Shrinks with its half instead of spilling over the divider: the 14
+     characters at this tracking run about 10.5em, plus the chip's padding and
+     some air either side of it. */
+  .pair__columns .code__value {
+    font-size: clamp(15px, 4.75cqi - 6px, 23px);
   }
 }
 
@@ -1160,6 +1133,12 @@ button {
 .pair__reveal:hover {
   color: var(--text);
   border-color: var(--border-strong);
+}
+
+.pair__kinds {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .qr {
@@ -1249,7 +1228,6 @@ button {
   font-size: 13px;
   font-weight: 550;
 }
-
 
 .device--pending {
   background: var(--warn-soft);
@@ -1404,224 +1382,11 @@ button {
   contain-intrinsic-size: auto 40px;
 }
 
-/* --------------------------------------------------------- shared files */
-.shared,
-.incoming {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 13px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-
-.shared__head,
-.incoming__head {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-}
-
-.shared__icon,
-.incoming__icon {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: var(--surface-2);
-  color: var(--text-soft);
-  flex: none;
-}
-
-.incoming__icon {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.shared__ident,
-.incoming__ident {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 1;
-}
-
-.shared__name,
-.incoming__name {
-  font-weight: 570;
-  font-size: 14.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The line under a filename is all measurement — size, sender, network — so it
-   is set as a readout: monospaced and tabular, so a column of cards has its
-   numbers in a column too. The filename above it stays in the sans, because a
-   filename is a name and not a reading. */
-.shared__meta,
-.incoming__meta {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
-}
-
-.shared__waiting {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--text-faint);
-  padding-left: 41px;
-}
-
-.peerlines {
-  list-style: none;
-  margin: 0;
-  padding: 0 0 0 41px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-/* The same row, indented under the file it belongs to. A device name is short
-   and fixed width, so here the bar is the flexible element rather than the
-   label — the opposite of a file row, and the only thing that differs. */
-.row--peer {
-  padding: 0;
-  border-top: 0;
-  font-size: 12.5px;
-}
-
 /* Hugs the name. The 84px column it used to reserve made every bar start at
    the same x, which was worth something when the name stood alone — but with
    the network label beside it, a short name like "Mac" left 54px of gap
    between the two things that belong together. The row's own gap separates
    them now. */
-/* The device is the identity of the line, so it is the strongest thing on it —
-   above the badge beside it, which is a property of the connection rather than
-   a name. */
-.row--peer .row__name {
-  flex: none;
-  min-width: 0;
-  max-width: 34%;
-  color: var(--text);
-  font-weight: 600;
-}
-
-.row--peer .row__bar {
-  flex: 1;
-  width: auto;
-}
-
-/*
- * Keeps the state in one column whether or not the row has a bar.
- *
- * The bar is the only flexible thing on a peer line, so a row without one —
- * every terminal state: cancelled, completed, failed, declined — had nothing to
- * absorb the slack and collapsed against the name. Three devices on one file
- * put their states at three different x positions, none of them the column the
- * transferring row used.
- *
- * On a row that does have a bar this changes nothing: the bar has already taken
- * the free space, so there is none left for the margin to claim.
- */
-.row--peer .row__state {
-  margin-left: auto;
-}
-
-/* ------------------------------------------------------------- incoming */
-.incoming--waiting_for_accept {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.incoming--completed {
-  border-color: color-mix(in srgb, var(--ok) 30%, var(--border));
-}
-
-.incoming--failed {
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-}
-
-.incoming__state {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-soft);
-  flex: none;
-}
-
-/* One line of consequence: storage advice before you decide, and what became
-   of it afterwards. Three tones, one shape.
-
-   Deliberately not filled callouts. Their soft background tokens drop the
-   light-theme text to 4.41:1 (ok) and 4.38:1 (danger) — under AA — while a
-   plain line on the card clears 5.0:1, and reads as the report it is. */
-.note-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 12.5px;
-}
-
-.note-line .icon {
-  flex: none;
-}
-
-.note-line--ok {
-  color: var(--ok);
-}
-
-.note-line--warn {
-  color: var(--warn);
-}
-
-.note-line--bad {
-  color: var(--danger);
-}
-
-.progressblock {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-/* How far, how much, how fast, how long — always in that order, always in the
-   same places, so the eye can find one without reading the others. */
-.stats {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  flex-wrap: wrap;
-  font-size: 12.5px;
-  color: var(--text-soft);
-  font-variant-numeric: tabular-nums;
-}
-
-.stats__percent {
-  font-weight: 650;
-  color: var(--text);
-}
-
-.stats__speed {
-  color: var(--accent);
-  font-weight: 550;
-}
-
-.incoming__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
 
 /* ---------------------------------------------------------------- shared */
 .progress {
@@ -1644,56 +1409,6 @@ button {
 
 .progress--done .progress__fill {
   background: var(--ok);
-}
-
-.details-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--text-faint);
-  font-size: 12.5px;
-  cursor: pointer;
-  align-self: flex-start;
-}
-
-.details-toggle .icon {
-  transition: transform 0.15s;
-}
-
-.details-toggle.is-open .icon {
-  transform: rotate(180deg);
-}
-
-.details {
-  margin: 0;
-  padding: 11px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  display: grid;
-  gap: 6px;
-  font-size: 12.5px;
-}
-
-.details__row {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-}
-
-.details dt {
-  color: var(--text-faint);
-}
-
-.details dd {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 12px;
-  text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* --------------------------------------------------------------- banners */
@@ -2438,7 +2153,6 @@ button {
 
   /* Rotating chevrons: the open/closed state is already carried by the layout
      underneath them, so the spin has nothing left to say. */
-  .details-toggle .icon,
   .batch__toggle .icon {
     transition: none;
   }
@@ -2470,8 +2184,20 @@ button {
 
 /* ---------------------------------------------------------- small screens */
 @media (max-width: 560px) {
-  .row__size {
-    display: none;
+  /* A file's name gets a line of its own on a phone — beside the buttons it
+     was squeezed to a word or two — and the line under it reads like a card's
+     summary: its size on the left, where it stands and what you can do about
+     it on the right. */
+  .row > .row__name {
+    flex-basis: 100%;
+  }
+
+  .row {
+    row-gap: 2px;
+  }
+
+  .row > .row__size {
+    margin-right: auto;
   }
 
   /* The summary carries four facts on a phone — size, who from, which network,
@@ -2487,12 +2213,13 @@ button {
 
   /* Overrides the desktop min-width: 0, which let the summary lose the row to
      the buttons and collapse to 78px. */
+  /* Room for the summary beside a retry, a stop and the toggle on one line;
+     any wider and the toggle was pushed onto a line of its own. */
   .batch__ident {
-    min-width: 150px;
+    min-width: 120px;
   }
 
-  .batch__meta,
-  .incoming__meta {
+  .batch__meta {
     flex-wrap: wrap;
     white-space: normal;
     overflow: visible;
@@ -2504,15 +2231,8 @@ button {
      is left dangling at the end of one line or leading the next, where it
      reads as a stray mark rather than as punctuation. Spacing does the
      separating once the line is allowed to wrap. */
-  .batch__meta .dot,
-  .incoming__meta .dot,
-  .shared__meta .dot,
-  .stats .dot {
+  .batch__meta .dot {
     display: none;
-  }
-
-  .stats {
-    column-gap: 10px;
   }
 
   /* Only when there is a real action to make room for. A toggle on its own
@@ -2523,7 +2243,8 @@ button {
   }
 
   /* Indented to the text above rather than to the icon. */
-  .batch__head--stacked > .button {
+  .batch__head--stacked > .button,
+  .batch__head--stacked > .row__acts {
     margin-left: 38px;
   }
 
@@ -2544,37 +2265,6 @@ button {
   .pair {
     padding: 0;
     gap: 12px;
-  }
-
-  /* Full-bleed cards read better than narrow ones on a phone. */
-  .shared,
-  .incoming {
-    padding: 12px;
-  }
-
-  .peerlines,
-  .shared__waiting {
-    padding-left: 0;
-  }
-
-  /* Device name on its own line so the bar and percentage always fit. */
-  .row--peer {
-    row-gap: 4px;
-  }
-
-  .row--peer .row__name {
-    min-width: 0;
-    max-width: none;
-    flex: 1 0 100%;
-  }
-
-  /* Primary action gets a full-width thumb target. */
-  .incoming__actions {
-    gap: 8px;
-  }
-
-  .incoming--waiting_for_accept .incoming__actions .button {
-    flex: 1;
   }
 
   .notices {
@@ -2609,7 +2299,6 @@ button {
     margin: 0 auto 2px;
     flex: none;
   }
-
 }
 
 /* Landscape phones: the QR must not push everything below the fold. */

@@ -41,6 +41,14 @@ function createStore(manager: SessionManager) {
 export const session = new SessionManager()
 const store = createStore(session)
 
+// The session is a singleton holding live connections, and cannot be swapped
+// in place: a hot update used to start a second SessionManager beside the
+// first, with no room, and the page sat on "Getting ready…". Accepting updates
+// here makes this module the boundary for every change beneath it, so any of
+// them reloads the page instead. (Written without `?.`: Vite finds `accept`
+// by reading the source.)
+if (import.meta.hot) import.meta.hot.accept(() => location.reload())
+
 export function useSession(): SessionSnapshot {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
 }
